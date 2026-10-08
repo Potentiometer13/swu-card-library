@@ -33,7 +33,7 @@ ASPECT_COLUMNS = {
 
 ASPECT_MODES = [
     "Deck Compatibility",
-    "Any Selected",
+    "All Selected",
     "Exact",
     "Exclude Selected"
 ]
@@ -59,6 +59,127 @@ def toggle_double_aspect(aspect):
 
     st.session_state[key] = 1 if current == 2 else 2
     reset_page()
+
+
+# The leader filter uses the same aspect button visuals as Cards,
+# but keeps completely separate selection state and pagination.
+def toggle_leader_aspect(aspect):
+    key = f"swu_leader_aspect_level_{aspect.lower()}"
+    current = st.session_state[key]
+    st.session_state[key] = 0 if current > 0 else 1
+    reset_leader_page()
+
+
+def toggle_leader_double_aspect(aspect):
+    key = f"swu_leader_aspect_level_{aspect.lower()}"
+    current = st.session_state[key]
+    st.session_state[key] = 1 if current == 2 else 2
+    reset_leader_page()
+
+
+def leader_aspect_grid():
+    """Same six colored aspect buttons used in the Cards gallery."""
+    aspects = [
+        "Heroism", "Villainy", "Vigilance", "Command",
+        "Aggression", "Cunning"
+    ]
+    icons = {
+        "Heroism": "⚪", "Villainy": "⚫",
+        "Vigilance": "🔵", "Command": "🟢",
+        "Aggression": "🔴", "Cunning": "🟡"
+    }
+    palette = {
+        "Heroism": ("#FFFFFF", "#171717"),
+        "Villainy": ("#252831", "#FFFFFF"),
+        "Vigilance": ("#307FC1", "#FFFFFF"),
+        "Command": ("#258852", "#FFFFFF"),
+        "Aggression": ("#C23E48", "#FFFFFF"),
+        "Cunning": ("#F0C746", "#202124")
+    }
+    levels = {}
+    for aspect in aspects:
+        key = f"swu_leader_aspect_level_{aspect.lower()}"
+        # No aspects chosen by default. All Selected with no selections
+        # returns all leaders, so browsing works immediately.
+        if key not in st.session_state:
+            st.session_state[key] = 0
+        levels[aspect] = st.session_state[key]
+
+    css = """
+    <style>
+    [class*="st-key-swu_leader_aspect_main_"] button,
+    [class*="st-key-swu_leader_aspect_double_"] button {
+        min-height: 48px;
+        width: 100%;
+        border-radius: 9px !important;
+        padding: 4px 2px !important;
+        font-weight: 600 !important;
+    }
+    [class*="st-key-swu_leader_aspect_main_"] button p,
+    [class*="st-key-swu_leader_aspect_double_"] button p {
+        font-size: .73rem !important;
+        line-height: 1.2 !important;
+        text-align: center !important;
+    }
+    """
+    for aspect in aspects:
+        slug = aspect.lower()
+        color, text_color = palette[aspect]
+        for kind in ("main", "double"):
+            if aspect in ("Heroism", "Villainy") and kind == "double":
+                continue
+            active = (levels[aspect] > 0) if kind == "main" else (levels[aspect] == 2)
+            selector = f".st-key-swu_leader_aspect_{kind}_{slug} button"
+            background = color if active else "rgba(107,114,128,0.14)"
+            foreground = text_color if active else "inherit"
+            border = "2px solid #374151" if active else "2px solid transparent"
+            shadow = "0 0 0 2px rgba(156,163,175,0.45)" if active else "none"
+            css += f"""
+            {selector}, {selector}:hover, {selector}:focus-visible {{
+                background-color: {background} !important;
+                color: {foreground} !important;
+                border: {border} !important;
+                box-shadow: {shadow} !important;
+                filter: none !important;
+                opacity: 1 !important;
+            }}
+            {selector} p, {selector}:hover p, {selector}:focus-visible p {{
+                color: {foreground} !important;
+            }}
+            """
+    st.markdown(css + "</style>", unsafe_allow_html=True)
+
+    left, right = st.columns(2, gap="small")
+    for aspect, column in (("Heroism", left), ("Villainy", right)):
+        with column:
+            st.button(
+                f"{icons[aspect]} {aspect}",
+                key=f"swu_leader_aspect_main_{aspect.lower()}",
+                on_click=toggle_leader_aspect,
+                args=(aspect,),
+                use_container_width=True, type="secondary"
+            )
+    for left_aspect, right_aspect in (
+        ("Vigilance", "Command"), ("Aggression", "Cunning")
+    ):
+        cols = st.columns([3, 1, 3, 1], gap="small")
+        for aspect, main_index in ((left_aspect, 0), (right_aspect, 2)):
+            slug = aspect.lower()
+            with cols[main_index]:
+                st.button(
+                    f"{icons[aspect]} {aspect}",
+                    key=f"swu_leader_aspect_main_{slug}",
+                    on_click=toggle_leader_aspect, args=(aspect,),
+                    use_container_width=True, type="secondary"
+                )
+            with cols[main_index + 1]:
+                st.button(
+                    icons[aspect] * 2,
+                    key=f"swu_leader_aspect_double_{slug}",
+                    on_click=toggle_leader_double_aspect, args=(aspect,),
+                    use_container_width=True, type="secondary"
+                )
+    return levels
 
 
 def change_page(amount, total_pages):
@@ -156,7 +277,7 @@ def has_any_aspect_filter():
 
 
 
-def apply_aspect_filters(query, mode, levels):
+def apply_aspect_filters(query, mode, levels, all_selected_empty="neutral"):
 
     columns = ASPECT_COLUMNS
 
@@ -182,30 +303,25 @@ def apply_aspect_filters(query, mode, levels):
             )
 
     # -----------------------------------------
-    # MODE 2: ANY SELECTED
+    # MODE 2: ALL SELECTED
     # -----------------------------------------
-    # Match at least one selected aspect.
+    # Every selected aspect must be present at least
+    # the selected number of times (1 or 2).
     # Additional unselected aspects are allowed.
-    # Neutral cards are excluded unless
-    # nothing is selected.
+    # With no aspects selected:
+    # Cards -> neutral only (as previously agreed).
+    # Leaders -> all leaders (useful browsing default).
 
-    elif mode == "Any Selected":
-
-        if selected:
-
-            conditions = [
-                f"{columns[aspect]}.gt.0"
-                for aspect in selected
-            ]
-
-            query = query.or_(
-                ",".join(conditions)
-            )
-
-        else:
-            # Nothing selected: neutral only
+    elif mode == "All Selected":
+        if not selected and all_selected_empty == "neutral":
             for column in columns.values():
                 query = query.eq(column, 0)
+        else:
+            for aspect in selected:
+                query = query.gte(
+                    columns[aspect],
+                    levels[aspect]
+                )
 
     # -----------------------------------------
     # MODE 3: EXACT
@@ -387,7 +503,7 @@ with leader_tab:
     st.divider()
 
     try:
-        leader_sets, leader_traits, _ = get_filter_options()
+        leader_sets, leader_traits, leader_keywords = get_filter_options()
         leader_set_names = {
             item["code"]: item["name"] for item in leader_sets
         }
@@ -409,18 +525,78 @@ with leader_tab:
             key="swu_leader_search",
             on_change=reset_leader_page,
         )
-        chosen_leader_aspects = st.multiselect(
-            "Aspects (match all selected)",
-            ASPECTS,
-            key="swu_leader_aspects",
+        leader_ability_contains = st.text_input(
+            "Ability text contains",
+            key="swu_leader_ability_contains",
             on_change=reset_leader_page,
         )
-        chosen_leader_traits = st.multiselect(
-            "Traits (match any selected)",
-            leader_traits,
-            key="swu_leader_traits",
+        leader_ability_excludes = st.text_input(
+            "Exclude ability text",
+            key="swu_leader_ability_excludes",
             on_change=reset_leader_page,
         )
+        side_left, side_right = st.columns(2)
+        with side_left:
+            include_front_abilities = st.checkbox(
+                "Include front abilities",
+                value=True,
+                key="swu_leader_search_front",
+                on_change=reset_leader_page,
+            )
+        with side_right:
+            include_back_abilities = st.checkbox(
+                "Include back abilities",
+                value=True,
+                key="swu_leader_search_back",
+                on_change=reset_leader_page,
+            )
+        if (leader_ability_contains.strip() or leader_ability_excludes.strip()) and not (
+            include_front_abilities or include_back_abilities
+        ):
+            st.caption("Select at least one card side to search ability text.")
+
+        st.markdown("**Leader deployment**")
+        ground_col, pilot_col = st.columns(2)
+        with ground_col:
+            show_ground_only = st.checkbox(
+                "Ground-only leaders",
+                value=True,
+                key="swu_leader_ground_only",
+                on_change=reset_leader_page,
+            )
+        with pilot_col:
+            show_pilot_leaders = st.checkbox(
+                "Pilot leaders",
+                value=True,
+                key="swu_leader_pilots",
+                on_change=reset_leader_page,
+                help="Leaders that can deploy as upgrades onto Vehicles",
+            )
+
+        with st.expander("Aspects", expanded=True):
+            leader_aspect_mode = st.selectbox(
+                "Aspect filter mode",
+                ["All Selected", "Deck Compatibility", "Exact", "Exclude Selected"],
+                index=0,
+                key="swu_leader_aspect_mode_v1",
+                on_change=reset_leader_page,
+            )
+            leader_levels = leader_aspect_grid()
+
+        with st.expander("Traits & Keywords"):
+            chosen_leader_traits = st.multiselect(
+                "Traits (match any selected)",
+                leader_traits,
+                key="swu_leader_traits",
+                on_change=reset_leader_page,
+            )
+            chosen_leader_keywords = st.multiselect(
+                "Keywords (match any selected)",
+                leader_keywords,
+                key="swu_leader_keywords",
+                on_change=reset_leader_page,
+            )
+
         with st.expander("Sets & Rarity"):
             include_leader_weekly = st.session_state.get(
                 "swu_leader_include_weekly", False
@@ -477,20 +653,62 @@ with leader_tab:
             leader_query = db.table("swu_grouped_leaders").select(
                 "uuid,gameplay_id,name,subtitle,card_type,set_code,"
                 "collector_number,variant_type,front_image_url,"
-                "back_image_url,aspects,traits,rarity",
+                "back_image_url,aspects,traits,keywords,rarity",
                 count="exact",
             )
             if leader_search.strip():
                 leader_query = leader_query.ilike(
                     "leader_search_text", f"%{leader_search.strip()}%"
                 )
-            if chosen_leader_aspects:
-                leader_query = leader_query.contains(
-                    "aspects", chosen_leader_aspects
+
+            # Search the chosen faces only. View columns are coalesced to
+            # non-NULL strings, so exclusions also retain blank-text leaders.
+            ability_column = (
+                "leader_both_ability_text"
+                if include_front_abilities and include_back_abilities
+                else "leader_front_ability_text"
+                if include_front_abilities
+                else "leader_back_ability_text"
+            )
+            if include_front_abilities or include_back_abilities:
+                if leader_ability_contains.strip():
+                    leader_query = leader_query.ilike(
+                        ability_column,
+                        f"%{leader_ability_contains.strip()}%",
+                    )
+                if leader_ability_excludes.strip():
+                    leader_query = leader_query.filter(
+                        ability_column,
+                        "not.ilike",
+                        f"%{leader_ability_excludes.strip()}%",
+                    )
+            elif leader_ability_contains.strip():
+                # A required match without either face enabled is impossible.
+                leader_query = leader_query.eq(
+                    "uuid", "00000000-0000-0000-0000-000000000000"
                 )
+
+            if not show_ground_only and not show_pilot_leaders:
+                # No leader deployment category chosen.
+                leader_query = leader_query.eq(
+                    "uuid", "00000000-0000-0000-0000-000000000000"
+                )
+            elif show_ground_only and not show_pilot_leaders:
+                leader_query = leader_query.eq("leader_is_pilot", False)
+            elif show_pilot_leaders and not show_ground_only:
+                leader_query = leader_query.eq("leader_is_pilot", True)
+
+            leader_query = apply_aspect_filters(
+                leader_query, leader_aspect_mode, leader_levels,
+                all_selected_empty="all",
+            )
             if chosen_leader_traits:
                 leader_query = leader_query.overlaps(
                     "traits", chosen_leader_traits
+                )
+            if chosen_leader_keywords:
+                leader_query = leader_query.overlaps(
+                    "keywords", chosen_leader_keywords
                 )
             if chosen_leader_sets:
                 leader_query = leader_query.in_("set_code", chosen_leader_sets)
@@ -636,7 +854,7 @@ with card_tab:
                 "Aspect filter mode",
                 ASPECT_MODES,
                 index=0,
-                key="aspect_filter_mode_v2",
+                key="aspect_filter_mode_v3",
                 on_change=reset_page
             )
 
