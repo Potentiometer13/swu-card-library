@@ -87,10 +87,12 @@ def load_printing_options(db, visible_cards):
         for c in visible_cards
     ))
     grouped = defaultdict(list)
+    
     fields = (
-        "uuid,gameplay_id,collector_number,set_code,card_number,"
+        "uuid,gameplay_id,collector_number,set_code,"
         "variant_type,front_image_url,name,subtitle"
     )
+
     # Chunk UUIDs to avoid very long REST URLs and project row limits.
     for offset in range(0, len(ids), 25):
         subset = ids[offset:offset + 25]
