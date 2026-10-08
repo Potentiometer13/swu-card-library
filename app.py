@@ -463,6 +463,12 @@ with leader_tab:
             key="swu_leader_page_size",
             on_change=reset_leader_page,
         )
+        leader_columns_count = st.selectbox(
+            "Leaders per row",
+            [3, 4],
+            index=0,
+            key="swu_leader_columns_count",
+        )
         if "swu_leader_page" not in st.session_state:
             st.session_state["swu_leader_page"] = 1
 
@@ -521,9 +527,9 @@ with leader_tab:
                 leader_page_controls(leader_total_pages, "top")
                 st.divider()
                 leader_printings = load_leader_printings(db, leader_cards)
-                leader_columns = st.columns(2)
+                leader_columns = st.columns(leader_columns_count, gap="small")
                 for index, leader in enumerate(leader_cards):
-                    with leader_columns[index % 2]:
+                    with leader_columns[index % leader_columns_count]:
                         group_id = str(
                             leader.get("gameplay_id") or leader["uuid"]
                         )
