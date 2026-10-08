@@ -1,41 +1,57 @@
 
 import streamlit as st
-import requests
+from supabase import create_client
 
-# Website configuration
 st.set_page_config(
     page_title="SWU Card Library",
     page_icon="🃏",
     layout="wide"
 )
 
-API_URL = "https://api.swuapi.com/cards"
+PAGE_SIZE = 24
 
 
-# Retrieve cards from the API
-@st.cache_data(ttl=3600)
-def get_cards(limit=24):
-    response = requests.get(
-        API_URL,
-        params={"limit": limit},
-        timeout=30
+# Connect to our Supabase database
+@st.cache_resource
+def get_database():
+    return create_client(
+        st.secrets["SUPABASE_URL"],
+        st.secrets["SUPABASE_PUBLISHABLE_KEY"]
     )
-    response.raise_for_status()
-
-    data = response.json()
-
-    if not isinstance(data, dict):
-        raise ValueError("Unexpected API response")
-
-    cards = data.get("cards")
-
-    if not isinstance(cards, list):
-        raise ValueError("No card list found in API response")
-
-    return cards, data.get("pagination", {})
 
 
-# Main website
+# Search the complete card database
+@st.cache_data(ttl=600)
+def search_cards(search_text, search_field, page):
+    database = get_database()
+
+    query = database.table("card_printings").select(
+        "uuid,name,subtitle,set_code,collector_number,"
+        "card_type,arena,cost,aspects,traits,rules_text,"
+        "front_image_url,variant_type",
+        count="exact"
+    )
+
+    if search_text:
+        column = (
+            "name" if search_field == "Card name"
+            else "rules_text"
+        )
+        query = query.ilike(column, f"%{search_text}%")
+
+    start = (page - 1) * PAGE_SIZE
+
+    response = (
+        query
+        .order("name")
+        .range(start, start + PAGE_SIZE - 1)
+        .execute()
+    )
+
+    return response.data, response.count
+
+
+# Application header
 st.title("Star Wars Unlimited Card Library")
 st.caption("Card Search | Deck Builder | Collection Tracker")
 
@@ -44,94 +60,99 @@ search_tab, deck_tab, collection_tab = st.tabs(
 )
 
 
-# CARD SEARCH PAGE
 with search_tab:
     st.header("Card Search")
 
-    try:
-        cards, pagination = get_cards()
+    col1, col2 = st.columns([2, 1])
 
-    except (requests.RequestException, ValueError) as error:
-        st.error(f"Unable to retrieve cards: {error}")
-        cards = []
-
-    if cards:
-        st.success("Connected to the SWU API!")
-
-        st.write(f"Cards loaded for preview: {len(cards)}")
-
+    with col1:
         search = st.text_input(
-            "Search card names or ability text"
+            "Search",
+            placeholder="Enter a card name or ability text"
         )
 
-        if search:
-            cards = [
-                card for card in cards
-                if search.lower() in (
-                    str(card.get("name") or "") + " " +
-                    str(card.get("text") or "")
-                ).lower()
-            ]
-
-        st.caption(
-            "Preview only: searches the cards loaded above."
+    with col2:
+        field = st.selectbox(
+            "Search field",
+            ["Card name", "Ability text"]
         )
+
+    page = st.number_input(
+        "Page", min_value=1, value=1, step=1
+    )
+
+    try:
+        cards, total = search_cards(
+            search.strip(), field, page
+        )
+
+        st.metric("Matching card printings", total or 0)
+
+        if not cards:
+            st.info("No cards found on this page.")
 
         columns = st.columns(4)
 
         for index, card in enumerate(cards):
             with columns[index % 4]:
-                name = card.get("name") or "Unknown Card"
-                subtitle = card.get("subtitle") or ""
+                image_url = card.get("front_image_url")
 
-                st.subheader(name)
-
-                if subtitle:
-                    st.caption(subtitle)
-
-                image = (
-                    card.get("frontImageUrl")
-                    or card.get("thumbnailUrl")
-                )
-
-                if image:
-                    st.image(image, width="stretch")
+                if image_url:
+                    st.image(image_url, width="stretch")
                 else:
-                    st.info("No image available")
+                    st.info("Image unavailable")
 
-                card_id = (
-                    card.get("collector_number")
-                    or card.get("id")
-                    or "Unknown"
+                st.markdown(
+                    f"**{card.get('name') or 'Unknown Card'}**"
                 )
 
-                st.write(f"**ID:** {card_id}")
+                if card.get("subtitle"):
+                    st.caption(card["subtitle"])
+
                 st.write(
-                    f"**Type:** {card.get('type', 'Unknown')}"
+                    f"Set: {card.get('set_code') or 'Unknown'}"
+                )
+
+                st.write(
+                    f"Card ID: "
+                    f"{card.get('collector_number') or 'N/A'}"
                 )
 
                 with st.expander("Card Details"):
                     st.write(
-                        f"**Cost:** {card.get('cost', 'N/A')}"
+                        f"Type: {card.get('card_type') or 'N/A'}"
                     )
                     st.write(
-                        f"**Aspects:** {', '.join(card.get('aspects') or [])}"
+                        f"Arena: {card.get('arena') or 'N/A'}"
                     )
                     st.write(
-                        f"**Traits:** {', '.join(card.get('traits') or [])}"
+                        f"Cost: {card.get('cost')}"
                     )
                     st.write(
-                        f"**Ability:** {card.get('text') or 'None'}"
+                        "Aspects:",
+                        card.get("aspects") or []
+                    )
+                    st.write(
+                        "Traits:",
+                        card.get("traits") or []
+                    )
+                    st.write(
+                        "Ability:",
+                        card.get("rules_text") or "None"
                     )
 
+    except Exception:
+        st.error(
+            "Could not load cards from Supabase. "
+            "Check the database connection and app secrets."
+        )
 
-# DECK BUILDER PAGE
+
 with deck_tab:
     st.header("Deck Builder")
-    st.info("Deck building functionality coming soon!")
+    st.info("Coming in Stage 3!")
 
 
-# COLLECTION PAGE
 with collection_tab:
     st.header("My Collection")
-    st.info("Collection tracking coming soon!")
+    st.info("Coming in Stage 4!")
