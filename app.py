@@ -286,7 +286,9 @@ def number_range(label, highest):
 
 
 
+
 def show_card(card):
+    # Display card image
     image_url = card.get("front_image_url")
 
     if image_url:
@@ -294,29 +296,22 @@ def show_card(card):
     else:
         st.info("Image unavailable")
 
-    name = card.get("name") or "Unknown"
-    subtitle = card.get("subtitle")
+    # Display only the card ID (e.g., LAW_689)
+    card_id = card.get("collector_number")
 
-    st.markdown(f"**{name}**")
+    if card_id:
+        card_id = str(card_id)
 
-    if subtitle:
-        st.caption(subtitle)
+        # Add set code only if it isn't already included
+        if "_" not in card_id:
+            card_id = (
+                f"{card.get('set_code')}_{card_id}"
+            )
+    else:
+        card_id = "Unknown ID"
 
-    st.caption(
-        f"{card.get('set_code') or '?'} | "
-        f"{card.get('collector_number') or '?'}"
-    )
+    st.markdown(f"**{card_id}**")
 
-    with st.expander("Details"):
-        st.write("Type:", card.get("card_type"))
-        st.write("Arena:", card.get("arena"))
-        st.write("Cost:", card.get("cost"))
-        st.write("Power:", card.get("power"))
-        st.write("HP:", card.get("hp"))
-        st.write("Aspects:", card.get("aspects") or [])
-        st.write("Traits:", card.get("traits") or [])
-        st.write("Keywords:", card.get("keywords") or [])
-        st.write("Ability:", card.get("rules_text") or "None")
 
 
 # --------------------------------------------------
