@@ -393,7 +393,7 @@ with card_tab:
             with arena_col1:
                 ground_selected = st.checkbox(
                     "Ground",
-                    value=False,
+                    value=True,
                     key="arena_ground",
                     on_change=reset_page
                 )
@@ -401,7 +401,7 @@ with card_tab:
             with arena_col2:
                 space_selected = st.checkbox(
                     "Space",
-                    value=False,
+                    value=True,
                     key="arena_space",
                     on_change=reset_page
                 )
