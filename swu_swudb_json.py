@@ -17,7 +17,7 @@ MAX_COPIES = 1000
 CARD_FIELDS = (
     "uuid,gameplay_id,name,subtitle,set_code,collector_number,card_type,"
     "arena,cost,power,hp,rarity,aspects,traits,keywords,rules_text,"
-    "front_image_url,back_image_url,variant_type"
+    "front_image_url,variant_type"
 )
 LEADER_FIELDS = (
     "uuid,gameplay_id,name,subtitle,set_code,collector_number,card_type,"
