@@ -7,6 +7,13 @@ from swu_grouping import (
     load_printing_options,
     show_grouped_card,
 )
+from swu_leaders import (
+    leader_page_controls,
+    load_leader_printings,
+    reset_leader_page,
+    selected_leader_panel,
+    show_leader_gallery_card,
+)
 
 st.set_page_config(
     page_title="SWU Deck Builder",
@@ -375,8 +382,162 @@ leader_tab, base_tab, card_tab = st.tabs(
 )
 
 with leader_tab:
-    st.header("Leaders")
-    st.info("Leader selection will be added in Stage 2E.")
+    st.header("Leader Library")
+    selected_leader_panel()
+    st.divider()
+
+    try:
+        leader_sets, leader_traits, _ = get_filter_options()
+        leader_set_names = {
+            item["code"]: item["name"] for item in leader_sets
+        }
+        weekly_leader_codes = {
+            code for code, set_name in leader_set_names.items()
+            if ("weekly" in set_name.lower() and "play" in set_name.lower())
+            or code.upper().endswith(("OP", "WP"))
+        }
+    except Exception as error:
+        st.error(f"Could not load leader filters: {error}")
+        st.stop()
+
+    leader_filters, leader_results = st.columns([1, 3], gap="large")
+
+    with leader_filters:
+        st.subheader("Filters")
+        leader_search = st.text_input(
+            "Leader name / subtitle",
+            key="swu_leader_search",
+            on_change=reset_leader_page,
+        )
+        chosen_leader_aspects = st.multiselect(
+            "Aspects (match all selected)",
+            ASPECTS,
+            key="swu_leader_aspects",
+            on_change=reset_leader_page,
+        )
+        chosen_leader_traits = st.multiselect(
+            "Traits (match any selected)",
+            leader_traits,
+            key="swu_leader_traits",
+            on_change=reset_leader_page,
+        )
+        with st.expander("Sets & Rarity"):
+            include_leader_weekly = st.session_state.get(
+                "swu_leader_include_weekly", False
+            )
+            leader_available_sets = [
+                code for code in leader_set_names
+                if include_leader_weekly or code not in weekly_leader_codes
+            ]
+            if "swu_leader_sets" in st.session_state:
+                st.session_state["swu_leader_sets"] = [
+                    code for code in st.session_state["swu_leader_sets"]
+                    if code in leader_available_sets
+                ]
+            chosen_leader_sets = st.multiselect(
+                "Sets",
+                leader_available_sets,
+                format_func=lambda code: f"{code} — {leader_set_names[code]}",
+                key="swu_leader_sets",
+                on_change=reset_leader_page,
+            )
+            st.checkbox(
+                "Include Weekly Play sets",
+                value=False,
+                key="swu_leader_include_weekly",
+                on_change=reset_leader_page,
+            )
+            chosen_leader_rarities = st.multiselect(
+                "Rarity",
+                ["Common", "Uncommon", "Rare", "Legendary", "Special"],
+                key="swu_leader_rarities",
+                on_change=reset_leader_page,
+            )
+
+    with leader_results:
+        st.subheader("Matching Leaders")
+        leader_page_size = st.selectbox(
+            "Leaders per page",
+            [100, 40, 20],
+            index=0,
+            key="swu_leader_page_size",
+            on_change=reset_leader_page,
+        )
+        if "swu_leader_page" not in st.session_state:
+            st.session_state["swu_leader_page"] = 1
+
+        try:
+            db = get_database()
+            leader_query = db.table("swu_grouped_leaders").select(
+                "uuid,gameplay_id,name,subtitle,card_type,set_code,"
+                "collector_number,variant_type,front_image_url,"
+                "back_image_url,aspects,traits,rarity",
+                count="exact",
+            )
+            if leader_search.strip():
+                leader_query = leader_query.ilike(
+                    "leader_search_text", f"%{leader_search.strip()}%"
+                )
+            if chosen_leader_aspects:
+                leader_query = leader_query.contains(
+                    "aspects", chosen_leader_aspects
+                )
+            if chosen_leader_traits:
+                leader_query = leader_query.overlaps(
+                    "traits", chosen_leader_traits
+                )
+            if chosen_leader_sets:
+                leader_query = leader_query.in_("set_code", chosen_leader_sets)
+            if chosen_leader_rarities:
+                leader_query = leader_query.in_("rarity", chosen_leader_rarities)
+
+            leader_cards, leader_total = get_grouped_page(
+                leader_query,
+                st.session_state["swu_leader_page"],
+                leader_page_size,
+            )
+            leader_total_pages = max(
+                1, math.ceil(leader_total / leader_page_size)
+            )
+            if leader_total and st.session_state["swu_leader_page"] > leader_total_pages:
+                st.session_state["swu_leader_page"] = leader_total_pages
+                leader_cards, leader_total = get_grouped_page(
+                    leader_query, leader_total_pages, leader_page_size
+                )
+
+            st.metric("Matching leaders", leader_total)
+            if leader_total:
+                first = (
+                    (st.session_state["swu_leader_page"] - 1)
+                    * leader_page_size + 1
+                )
+                last = min(
+                    st.session_state["swu_leader_page"] * leader_page_size,
+                    leader_total,
+                )
+                st.caption(
+                    f"Showing {first:,}–{last:,} of {leader_total:,} unique leaders"
+                )
+                leader_page_controls(leader_total_pages, "top")
+                st.divider()
+                leader_printings = load_leader_printings(db, leader_cards)
+                leader_columns = st.columns(4)
+                for index, leader in enumerate(leader_cards):
+                    with leader_columns[index % 4]:
+                        group_id = str(
+                            leader.get("gameplay_id") or leader["uuid"]
+                        )
+                        show_leader_gallery_card(
+                            leader,
+                            leader_printings.get(group_id, [leader]),
+                        )
+                st.divider()
+                leader_page_controls(leader_total_pages, "bottom")
+            else:
+                st.info("No matching leaders found.")
+
+        except Exception as error:
+            st.error(f"Leader search failed: {error}")
 
 with base_tab:
     st.header("Bases")
