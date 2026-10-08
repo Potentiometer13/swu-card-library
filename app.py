@@ -30,7 +30,7 @@ from swu_bases import (
 from swu_deck_storage import render_deck_storage
 from swu_twin_suns import (
     render_deck_builder, add_card, card_copy_limit, card_identity,
-    deck_entries,
+    deck_entries, get_selected_leaders,
 )
 from swu_leaders import (
     leader_page_controls,
@@ -96,6 +96,26 @@ def toggle_double_aspect(aspect):
     current = st.session_state[key]
 
     st.session_state[key] = 1 if current == 2 else 2
+    reset_page()
+
+
+def initialize_card_aspects_all():
+    """Start the Cards tab with every aspect enabled.
+
+    Unlike the old leader/base-driven defaults, this intentionally does not
+    reset manual aspect choices when either Twin Suns leader or base changes.
+    Version 2 initializes the new default once for existing Streamlit sessions.
+    """
+    if st.session_state.get("swu_card_aspect_defaults_version") == 2:
+        return
+
+    for aspect in ASPECTS:
+        # Heroism / Villainy use on/off buttons (1).
+        # The four primary colors start with both icons enabled (2).
+        level = 1 if aspect in ("Heroism", "Villainy") else 2
+        st.session_state[f"swu_aspect_level_{aspect.lower()}"] = level
+
+    st.session_state["swu_card_aspect_defaults_version"] = 2
     reset_page()
 
 
@@ -1208,6 +1228,9 @@ with base_tab:
 with card_tab:
     st.header("Card Search")
 
+    # Initialize all six aspects before Streamlit creates their controls.
+    initialize_card_aspects_all()
+
     try:
         sets, available_traits, available_keywords = (
             get_filter_options()
@@ -1326,11 +1349,7 @@ with card_tab:
                 key = f"swu_aspect_level_{aspect.lower()}"
 
                 if key not in st.session_state:
-                    default = (
-                        1 if aspect in ("Heroism", "Villainy")
-                        else 2
-                    )
-                    st.session_state[key] = default
+                    st.session_state[key] = 0
 
                 levels[aspect] = st.session_state[key]
 
