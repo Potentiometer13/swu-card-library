@@ -36,6 +36,34 @@ def reset_page():
     st.session_state.page = 1
 
 
+# ---------------------------------------------
+# ADVANCED SEARCH CONDITION MANAGEMENT
+# ---------------------------------------------
+
+if "adv_rows" not in st.session_state:
+    st.session_state.adv_rows = 0
+
+
+def add_adv_row():
+    st.session_state.adv_rows = min(
+        12,
+        st.session_state.adv_rows + 1
+    )
+    reset_page()
+
+
+def remove_adv_row():
+    if st.session_state.adv_rows > 0:
+        index = st.session_state.adv_rows - 1
+
+        for field in ("mode", "field", "term"):
+            st.session_state.pop(
+                f"adv_{field}_{index}", None
+            )
+
+        st.session_state.adv_rows -= 1
+        reset_page()
+
 def change_page(amount, total_pages):
     st.session_state.page = max(
         1,
@@ -321,6 +349,82 @@ with card_tab:
             on_change=reset_page
         )
 
+# ---------------------------------------------
+# ADVANCED SEARCH UI
+# ---------------------------------------------
+
+advanced_rules = []
+
+with st.expander("Advanced AND / OR / NOT Search"):
+
+    st.caption(
+        "AND: all conditions must match. "
+        "OR: at least one must match. "
+        "NOT: exclude matching cards."
+    )
+
+    for i in range(st.session_state.adv_rows):
+
+        st.markdown(f"**Condition {i + 1}**")
+
+        mode = st.selectbox(
+            "Logic",
+            ["AND", "OR", "NOT"],
+            key=f"adv_mode_{i}",
+            on_change=reset_page
+        )
+
+        field = st.selectbox(
+            "Search field",
+            [
+                "Ability text",
+                "Card name / subtitle",
+                "Trait",
+                "Keyword"
+            ],
+            key=f"adv_field_{i}",
+            on_change=reset_page
+        )
+
+        term = st.text_input(
+            "Contains",
+            key=f"adv_term_{i}",
+            on_change=reset_page,
+            placeholder="Enter text..."
+        )
+
+        if term.strip():
+            advanced_rules.append({
+                "mode": mode,
+                "field": field,
+                "term": term.strip()
+            })
+
+        st.divider()
+
+    add_col, remove_col = st.columns(2)
+
+    with add_col:
+        st.button(
+            "➕ Add condition",
+            on_click=add_adv_row,
+            disabled=st.session_state.adv_rows >= 12,
+            use_container_width=True
+        )
+
+    with remove_col:
+        st.button(
+            "➖ Remove last",
+            on_click=remove_adv_row,
+            disabled=st.session_state.adv_rows == 0,
+            use_container_width=True
+        )
+
+    if advanced_rules:
+        st.caption(
+            f"{len(advanced_rules)} active conditions"
+        )
+
         with st.expander("Card Type & Stats", expanded=True):
             card_types = st.multiselect(
                 "Card type",
@@ -465,15 +569,29 @@ with card_tab:
 
         else:
             try:
+                
                 db = get_database()
 
-                query = db.table("swu_regular_cards").select(
-                    "uuid,name,subtitle,set_code,"
-                    "collector_number,card_type,arena,"
-                    "cost,power,hp,rarity,aspects,traits,"
-                    "keywords,rules_text,front_image_url",
-                    count="exact"
-                )
+                # Use advanced database search only when
+                # the user has entered advanced conditions.
+                # Otherwise preserve our existing faster query.
+                
+                if advanced_rules:
+                    query = db.rpc(
+                        "swu_advanced_cards",
+                        {"p_rules": advanced_rules},
+                        count="exact"
+                    )
+                
+                else:
+                    query = db.table("swu_regular_cards").select(
+                        "uuid,name,subtitle,set_code,"
+                        "collector_number,card_type,arena,"
+                        "cost,power,hp,rarity,aspects,traits,"
+                        "keywords,rules_text,front_image_url",
+                        count="exact"
+                    )
+
 
                 if name.strip():
                     query = query.ilike(
