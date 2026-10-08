@@ -125,10 +125,10 @@ def selected_base_panel():
 
 
 @st.dialog("Base details", width="large", on_dismiss="rerun")
-def show_base_dialog(base, printings):
+def show_base_dialog(base, printings, gallery_group_id=None):
     variants = sorted(list(printings or [base]), key=printing_sort_key)
     by_id = {str(p["uuid"]): p for p in variants}
-    group_id = str(base.get("gameplay_id") or base["uuid"])
+    group_id = gallery_group_id or str(base.get("gameplay_id") or base["uuid"])
     selection_key = f"swu_base_printing_{group_id}"
     if st.session_state.get(selection_key) not in by_id:
         preferred = str(base["uuid"])
@@ -143,6 +143,7 @@ def show_base_dialog(base, printings):
     st.selectbox(
         "Printing", options=list(by_id),
         format_func=lambda uid: (
+            f"{base_display_name(by_id[uid])} · "
             f"{printing_id(by_id[uid])} · "
             f"{by_id[uid].get('variant_type') or 'Other printing'}"
         ), key=selection_key,
@@ -167,7 +168,7 @@ def show_base_dialog(base, printings):
 
     selected = st.session_state.get("swu_selected_base") or {}
     button_text = (
-        "Update Selected Base" if selected.get("gameplay_id") == group_id
+        "Update Selected Base" if selected.get("uuid") in by_id
         else "Add Base"
     )
     if st.button(
@@ -180,11 +181,12 @@ def show_base_dialog(base, printings):
 
 def show_base_gallery_card(
     base, printings, location_options=None, location_key=None,
-    location_label_func=None
+    location_label_func=None, reserve_location_space=False,
+    gallery_group_id=None
 ):
     """Clickable artwork, optional location dropdown, then Add Base."""
     variants = sorted(list(printings or [base]), key=printing_sort_key)
-    group_id = str(base.get("gameplay_id") or base["uuid"])
+    group_id = gallery_group_id or str(base.get("gameplay_id") or base["uuid"])
     selection_key = f"swu_base_printing_{group_id}"
     by_id = {str(p["uuid"]): p for p in variants}
     if st.session_state.get(selection_key) not in by_id:
@@ -235,9 +237,9 @@ def show_base_gallery_card(
         use_container_width=True,
         help="Click the base image to see available printings",
     ):
-        show_base_dialog(base, variants)
+        show_base_dialog(base, variants, gallery_group_id=gallery_group_id)
 
-    # Standard 30-HP and common LOF Force bases may offer locations.
+    # Standard, LOF Force, and LAW common bases offer real locations.
     # Render the selector below the image with no visible label.
     if location_options:
         st.selectbox(
@@ -249,10 +251,17 @@ def show_base_gallery_card(
             key=location_key,
             label_visibility="collapsed",
         )
+    elif reserve_location_space:
+        # Match the height of the location selector in mixed rows, so
+        # all Add Base buttons line up without showing an empty dropdown.
+        st.markdown(
+            '<div style="height: 40px" aria-hidden="true"></div>',
+            unsafe_allow_html=True,
+        )
 
     already_selected = (
-        (st.session_state.get("swu_selected_base") or {}).get("gameplay_id")
-        == group_id
+        (st.session_state.get("swu_selected_base") or {}).get("uuid")
+        in by_id
     )
     st.button(
         "✓ Added" if already_selected else "Add Base",
@@ -270,7 +279,7 @@ def show_base_gallery_card(
 PRIMARY_BASE_ASPECTS = ("Vigilance", "Command", "Aggression", "Cunning")
 HOMEWORLD_PLANETS = ("Tatooine", "Naboo", "Kashyyyk", "Endor")
 BASE_LIBRARY_FIELDS = (
-    BASE_FIELDS + ",traits,keywords,base_search_text,base_ability_search_text,"
+    BASE_FIELDS + ",traits,keywords,base_search_text,base_ability_search_text,raw_data,"
     "aspect_vigilance,aspect_command,aspect_aggression,aspect_cunning,"
     "aspect_heroism,aspect_villainy"
 )
@@ -377,6 +386,54 @@ def is_force_common_base(base):
     )
 
 
+# These eight 27-HP LAW bases use a different named location for each color.
+# The API can omit a separate subtitle; keep the planet names searchable.
+LAW_COMMON_LOCATIONS = {
+    "daimyo's palace": "Tatooine",
+    "coaxium mine": "Kessel",
+    "aldhani garrison": "Aldhani",
+    "imperial command complex": "Lothal",
+    "contested caverns": "Quarzite",
+    "stygeon spire": "Stygeon Prime",
+    "canto bight": "Cantonica",
+    "partisan hideout": "Segra Milo",
+}
+
+
+def law_location_label(base):
+    """Display LAW common-base locations alphabetically, with no set codes."""
+    subtitle = str(base.get("subtitle") or "").strip()
+    if subtitle:
+        return subtitle
+    name = str(base.get("name") or "").strip()
+    short = re.split(r"\s+[-–—]\s+", name, maxsplit=1)[0].strip()
+    return LAW_COMMON_LOCATIONS.get(short.casefold(), name)
+
+
+def law_location_sort(base):
+    return (
+        law_location_label(base).casefold(),
+        base_display_name(base).casefold(),
+        str(base.get("uuid") or ""),
+    )
+
+
+def is_law_common_base(base):
+    """Common 27-HP LAW bases with the ignore-one-aspect Epic Action."""
+    text = str(base.get("base_ability_search_text") or "").casefold()
+    aspects = base_aspect_names(base)
+    return (
+        str(base.get("set_code") or "").upper() == "LAW"
+        and str(base.get("rarity") or "").casefold() == "common"
+        and int(base.get("hp") or 0) == 27
+        and len(aspects) == 1
+        and next(iter(aspects)) in PRIMARY_BASE_ASPECTS
+        and "play a card from your hand" in text
+        and "ignoring 1" in text
+        and "aspect" in text
+    )
+
+
 def force_location_label(base):
     """Label a Force base by location, not its building's full card name."""
     subtitle = str(base.get("subtitle") or "").strip()
@@ -420,11 +477,35 @@ def leader_primary_aspects(session):
     }
 
 
+def base_name_and_location_text(base):
+    """Search the printed base name AND the planet/location (not ability text)."""
+    raw = base.get("raw_data") or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    parts = [
+        base.get("name"),
+        base.get("subtitle"),  # The base location on most SWU data feeds
+        base.get("base_search_text"),
+        base_planet(base),
+        location_label(base),
+        law_location_label(base),
+        force_location_label(base),
+    ]
+    for key in ("location", "planet", "world", "basePlanet", "baseLocation"):
+        value = raw.get(key)
+        if isinstance(value, str):
+            parts.append(value)
+    # Fallback for older printings with the location absent from the API.
+    if str(base.get("name") or "").strip().casefold() == "lake country":
+        parts.append("Naboo")
+    return " ".join(str(part) for part in parts if part).casefold()
+
+
 def matches_base_filters(base, filters):
     """In-memory filter; applied after grouping so all variants remain available."""
-    name = base_display_name(base).casefold()
+    name_and_location = base_name_and_location_text(base)
     ability = str(base.get("base_ability_search_text") or "").casefold()
-    if filters.get("name") and filters["name"].casefold() not in name:
+    if filters.get("name") and filters["name"].strip().casefold() not in name_and_location:
         return False
     if filters.get("ability") and filters["ability"].casefold() not in ability:
         return False
@@ -439,7 +520,7 @@ def matches_base_filters(base, filters):
     elif (low > 0 and hp < low) or (high < filters.get("absolute_max_hp", high) and hp > high):
         return False
 
-    mode = filters.get("mode", "Exclude Selected")
+    mode = filters.get("mode", "Deck Compatibility")
     chosen = set(filters.get("selected_aspects") or [])
     aspects = base_aspect_names(base)
     if mode == "Exclude Selected":
@@ -448,15 +529,16 @@ def matches_base_filters(base, filters):
             return False
         if not chosen and not aspects:
             return False
-    elif mode == "All Selected":
-        if not chosen.issubset(aspects):
-            return False
     elif mode == "Exact":
+        # Match the precise aspect combination, including no aspects.
+        # No selected colors means only colorless bases.
         if chosen != aspects:
             return False
     elif mode == "Deck Compatibility":
         if not aspects.issubset(chosen):
             return False
+    else:
+        raise ValueError(f"Unknown base aspect filter mode: {mode}")
 
     traits = set(base.get("traits") or [])
     keywords = set(base.get("keywords") or [])
@@ -494,6 +576,7 @@ def build_base_search_results(all_bases, all_printings, filters_config):
     """
     standard = {aspect: [] for aspect in PRIMARY_BASE_ASPECTS}
     force = {aspect: [] for aspect in PRIMARY_BASE_ASPECTS}
+    law = {aspect: [] for aspect in PRIMARY_BASE_ASPECTS}
     neutral = []
     special = []
 
@@ -505,6 +588,9 @@ def build_base_search_results(all_bases, all_printings, filters_config):
         elif is_force_common_base(base):
             aspect = next(iter(base_aspect_names(base)))
             force[aspect].append(base)
+        elif is_law_common_base(base):
+            aspect = next(iter(base_aspect_names(base)))
+            law[aspect].append(base)
         elif category == "neutral":
             neutral.append(base)
         else:
@@ -531,13 +617,12 @@ def build_base_search_results(all_bases, all_printings, filters_config):
                 "choices": choices,
             })
 
-    # Second: neutral bases retain the prior special-case behavior: their
-    # category is available even in Exclude Selected with no colors selected.
-    neutral_filters = dict(filters_config)
-    neutral_filters["mode"] = "All Selected"
-    neutral_filters["selected_aspects"] = set()
+    # Second: colorless bases must obey the active aspect filter too.
+    # Deck Compatibility includes them. Exact includes them only when no
+    # aspects are selected. Exclude Selected excludes them when no colors
+    # are selected, as in the Cards tab.
     for base in neutral:
-        matching = first_matching_printing(base, all_printings, neutral_filters)
+        matching = first_matching_printing(base, all_printings, filters_config)
         if matching is not None:
             results.append({"kind": "neutral", "base": matching})
 
@@ -557,6 +642,25 @@ def build_base_search_results(all_bases, all_printings, filters_config):
         if choices:
             results.append({
                 "kind": "force",
+                "aspect": aspect,
+                "choices": choices,
+            })
+
+    # Common LAW bases: two real selectable locations per aspect.
+    for aspect in PRIMARY_BASE_ASPECTS:
+        choices = sorted(
+            (
+                matched
+                for base in law[aspect]
+                if (matched := first_matching_printing(
+                    base, all_printings, filters_config
+                )) is not None
+            ),
+            key=law_location_sort,
+        )
+        if choices:
+            results.append({
+                "kind": "law",
                 "aspect": aspect,
                 "choices": choices,
             })

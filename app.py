@@ -19,6 +19,7 @@ from swu_bases import (
     base_planet,
     location_label,
     force_location_label,
+    law_location_label,
     standard_location_sort,
     leader_primary_aspects,
     matches_base_filters,
@@ -988,7 +989,7 @@ with base_tab:
         st.button("Clear Filters", key="swu_clear_base_filters",
                   on_click=clear_base_filters, use_container_width=True)
         base_search = st.text_input(
-            "Base name / subtitle", key="swu_base_search", on_change=reset_base_page)
+            "Base name / location", key="swu_base_search", on_change=reset_base_page)
         base_ability_contains = st.text_input(
             "Ability text contains", key="swu_base_ability_contains", on_change=reset_base_page)
         base_ability_excludes = st.text_input(
@@ -1007,9 +1008,16 @@ with base_tab:
                 value=max_base_hp, step=1, key="swu_base_hp_max", on_change=reset_base_page)
 
         with st.expander("Aspects", expanded=True):
+            # Only these three modes apply to bases. Cards and Leaders keep
+            # their own independent aspect-mode choices.
+            base_mode_choices = [
+                "Deck Compatibility", "Exact", "Exclude Selected"
+            ]
+            if st.session_state.get("swu_base_aspect_mode") not in base_mode_choices:
+                st.session_state["swu_base_aspect_mode"] = "Deck Compatibility"
             base_aspect_mode = st.selectbox(
                 "Aspect filter mode",
-                ["Deck Compatibility", "All Selected", "Exact", "Exclude Selected"],
+                base_mode_choices,
                 index=0, key="swu_base_aspect_mode", on_change=reset_base_page)
             base_levels = base_aspect_grid()
             st.caption("Defaults to colors not already on your selected leader(s). "
@@ -1104,58 +1112,74 @@ with base_tab:
                     end = start + len(visible)
                     st.caption(
                         f"Showing {start + 1:,}–{end:,} of {total_bases:,} bases. "
-                        "Standard colors first, then colorless, then Force and other ability bases."
+                        "Standard colors first, then colorless, Force, LAW, and other ability bases."
                     )
                     base_page_controls(total_pages, "top")
                     st.divider()
 
-                    columns = st.columns(bases_per_row, gap="small")
-                    for index, result in enumerate(visible):
-                        with columns[index % bases_per_row]:
-                            # Resolve the location before displaying the image,
-                            # but render the dropdown beneath the image.
-                            location_options = None
-                            location_key = None
-                            location_label_func = None
-                            if result["kind"] in ("standard", "force"):
-                                aspect = result["aspect"]
-                                location_options = {
-                                    str(base.get("gameplay_id") or base["uuid"]): base
-                                    for base in result["choices"]
-                                }
-                                if result["kind"] == "standard":
-                                    location_key = f"swu_base_location_{aspect.lower()}"
-                                    location_label_func = location_label
-                                    # Standard bases default to Naboo.
-                                    preferred = next(
-                                        (
-                                            gid for gid, option in location_options.items()
-                                            if base_planet(option) == "Naboo"
-                                            or location_label(option).casefold() == "naboo"
-                                        ),
-                                        next(iter(location_options)),
-                                    )
+                    # Build independent rows, rather than continuously stacking
+                    # cards into the same columns. This keeps later rows aligned.
+                    for row_start in range(0, len(visible), bases_per_row):
+                        row_results = visible[row_start:row_start + bases_per_row]
+                        row_has_dropdown = any(
+                            result["kind"] in ("standard", "force", "law")
+                            for result in row_results
+                        )
+                        columns = st.columns(bases_per_row, gap="small")
+                        for column, result in zip(columns, row_results):
+                            with column:
+                                # Resolve the location before displaying the image,
+                                # but render the dropdown beneath the image.
+                                location_options = None
+                                location_key = None
+                                location_label_func = None
+                                if result["kind"] in ("standard", "force", "law"):
+                                    aspect = result["aspect"]
+                                    location_options = {
+                                        str(option.get("gameplay_id") or option["uuid"]): option
+                                        for option in result["choices"]
+                                    }
+                                    if result["kind"] == "standard":
+                                        location_key = f"swu_base_location_{aspect.lower()}"
+                                        location_label_func = location_label
+                                        # Keep Naboo as the standard-base default.
+                                        preferred = next(
+                                            (
+                                                gid for gid, option in location_options.items()
+                                                if base_planet(option) == "Naboo"
+                                                or location_label(option).casefold() == "naboo"
+                                            ),
+                                            next(iter(location_options)),
+                                        )
+                                    elif result["kind"] == "force":
+                                        location_key = f"swu_base_force_location_{aspect.lower()}"
+                                        location_label_func = force_location_label
+                                        preferred = next(iter(location_options))
+                                    else:
+                                        location_key = f"swu_base_law_location_{aspect.lower()}"
+                                        location_label_func = law_location_label
+                                        preferred = next(iter(location_options))
+
+                                    # Search results may narrow the location options.
+                                    # Never retain a location no longer in the list.
+                                    if st.session_state.get(location_key) not in location_options:
+                                        st.session_state[location_key] = preferred
+                                    base = location_options[st.session_state[location_key]]
                                 else:
-                                    # LOF Force-token bases: two locations per color.
-                                    # Choices are alphabetized in swu_bases.py.
-                                    location_key = f"swu_base_force_location_{aspect.lower()}"
-                                    location_label_func = force_location_label
-                                    preferred = next(iter(location_options))
+                                    base = result["base"]
 
-                                if st.session_state.get(location_key) not in location_options:
-                                    st.session_state[location_key] = preferred
-                                base = location_options[st.session_state[location_key]]
-                            else:
-                                base = result["base"]
-
-                            group_id = str(base.get("gameplay_id") or base["uuid"])
-                            show_base_gallery_card(
-                                base,
-                                all_printings.get(group_id, [base]),
-                                location_options=location_options,
-                                location_key=location_key,
-                                location_label_func=location_label_func,
-                            )
+                                # Each location is a real base with its own
+                                # gameplay_id. Its Standard/Foil/etc printings
+                                # remain in the separate card-details popup.
+                                group_id = str(base.get("gameplay_id") or base["uuid"])
+                                show_base_gallery_card(
+                                    base,
+                                    all_printings.get(group_id, [base]),
+                                    location_options=location_options,
+                                    location_key=location_key,
+                                    location_label_func=location_label_func,
+                                    reserve_location_space=row_has_dropdown,
+                                )
 
                     st.divider()
                     base_page_controls(total_pages, "bottom")
