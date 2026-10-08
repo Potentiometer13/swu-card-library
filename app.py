@@ -310,7 +310,10 @@ def show_card(card):
     else:
         card_id = "Unknown ID"
 
-    st.markdown(f"**{card_id}**")
+    st.markdown(
+        f"<p style='text-align: center; font-weight: bold;'>{card_id}</p>",
+        unsafe_allow_html=True
+    )
 
 
 
