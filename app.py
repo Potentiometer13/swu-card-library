@@ -63,6 +63,34 @@ def toggle_double_aspect(aspect):
 
 # The leader filter uses the same aspect button visuals as Cards,
 # but keeps completely separate selection state and pagination.
+def clear_leader_filters():
+    """Reset Leaders search filters, preserving the chosen leader and layout."""
+
+    defaults = {
+        "swu_leader_search": "",
+        "swu_leader_ability_contains": "",
+        "swu_leader_ability_excludes": "",
+        "swu_leader_search_front": True,
+        "swu_leader_search_back": True,
+        "swu_leader_ground_only": True,
+        "swu_leader_pilots": True,
+        "swu_leader_aspect_mode_v1": "All Selected",
+        "swu_leader_traits": [],
+        "swu_leader_keywords": [],
+        "swu_leader_sets": [],
+        "swu_leader_include_weekly": False,
+        "swu_leader_rarities": [],
+    }
+
+    for key, value in defaults.items():
+        st.session_state[key] = value
+
+    for aspect in ASPECTS:
+        st.session_state[f"swu_leader_aspect_level_{aspect.lower()}"] = 0
+
+    reset_leader_page()
+
+
 def toggle_leader_aspect(aspect):
     key = f"swu_leader_aspect_level_{aspect.lower()}"
     current = st.session_state[key]
@@ -520,6 +548,12 @@ with leader_tab:
 
     with leader_filters:
         st.subheader("Filters")
+        st.button(
+            "Clear Filters",
+            key="swu_clear_leader_filters",
+            on_click=clear_leader_filters,
+            use_container_width=True,
+        )
         leader_search = st.text_input(
             "Leader name / subtitle",
             key="swu_leader_search",
@@ -632,19 +666,22 @@ with leader_tab:
 
     with leader_results:
         st.subheader("Matching Leaders")
-        leader_page_size = st.selectbox(
-            "Leaders per page",
-            [100, 40, 20],
-            index=0,
-            key="swu_leader_page_size",
-            on_change=reset_leader_page,
-        )
-        leaders_per_row = st.selectbox(
-            "Leaders per row",
-            [1, 2, 3, 4],
-            index=1,
-            key="swu_leaders_per_row",
-        )
+        page_col, row_col = st.columns(2, gap="medium")
+        with page_col:
+            leader_page_size = st.selectbox(
+                "Leaders per page",
+                [100, 40, 20],
+                index=0,
+                key="swu_leader_page_size",
+                on_change=reset_leader_page,
+            )
+        with row_col:
+            leaders_per_row = st.selectbox(
+                "Leaders per row",
+                [1, 2, 3, 4],
+                index=1,
+                key="swu_leaders_per_row",
+            )
         if "swu_leader_page" not in st.session_state:
             st.session_state["swu_leader_page"] = 1
 
