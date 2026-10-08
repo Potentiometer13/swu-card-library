@@ -178,8 +178,10 @@ def show_base_dialog(base, printings):
         st.rerun()
 
 
-def show_base_gallery_card(base, printings):
-    """Clickable landscape artwork, no ID label, Add Base outside dialog."""
+def show_base_gallery_card(
+    base, printings, location_options=None, location_key=None
+):
+    """Clickable artwork, optional location dropdown, then Add Base."""
     variants = sorted(list(printings or [base]), key=printing_sort_key)
     group_id = str(base.get("gameplay_id") or base["uuid"])
     selection_key = f"swu_base_printing_{group_id}"
@@ -233,6 +235,17 @@ def show_base_gallery_card(base, printings):
         help="Click the base image to see available printings",
     ):
         show_base_dialog(base, variants)
+
+    # Only the four standard-color cards have a location selector.
+    # Put it between the image and Add Base; don't display a label.
+    if location_options:
+        st.selectbox(
+            "Base location",
+            options=list(location_options),
+            format_func=lambda gid: location_label(location_options[gid]),
+            key=location_key,
+            label_visibility="collapsed",
+        )
 
     already_selected = (
         (st.session_state.get("swu_selected_base") or {}).get("gameplay_id")
@@ -324,16 +337,22 @@ def base_planet(base):
 def location_label(base):
     planet = base_planet(base)
     if planet:
-        return f"{planet} — {base_display_name(base)}"
-    return f"Other location — {base_display_name(base)} ({base.get('set_code') or '?'})"
+        return planet
+    # Older bases may not carry a planet trait. Show just their location/name,
+    # without a promotional-set suffix or an "Other location" category prefix.
+    name = base_display_name(base).strip()
+    return re.sub(r"(?i)^other\s+location\s*[-–—:]\s*", "", name).strip()
 
 
 def standard_location_sort(base):
+    # Sort exactly as the dropdown is displayed, alphabetically by location.
+    # Use the set only as a hidden tie-breaker if names are identical.
     planet = base_planet(base)
     return (
+        location_label(base).casefold(),
         0 if (base.get("set_code") or "").upper() == "HMW" and planet else 1,
-        HOMEWORLD_PLANETS.index(planet) if planet in HOMEWORLD_PLANETS else 99,
         base_display_name(base).casefold(),
+        str(base.get("uuid") or ""),
     )
 
 

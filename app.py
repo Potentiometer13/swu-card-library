@@ -1095,30 +1095,33 @@ with base_tab:
                     base_page_controls(total_pages, "top")
                     st.divider()
 
-                    icons = {
-                        "Vigilance": "🔵", "Command": "🟢",
-                        "Aggression": "🔴", "Cunning": "🟡",
-                    }
                     columns = st.columns(bases_per_row, gap="small")
                     for index, result in enumerate(visible):
                         with columns[index % bases_per_row]:
+                            # Resolve the location before displaying the image,
+                            # but render the dropdown beneath the image.
+                            location_options = None
+                            location_key = None
                             if result["kind"] == "standard":
                                 aspect = result["aspect"]
-                                choices = result["choices"]
-                                by_id = {
+                                location_options = {
                                     str(base.get("gameplay_id") or base["uuid"]): base
-                                    for base in choices
+                                    for base in result["choices"]
                                 }
-                                st.markdown(f"**{icons[aspect]} {aspect}**")
-                                selection_key = f"swu_base_location_{aspect.lower()}"
-                                selected_id = st.selectbox(
-                                    "Location",
-                                    options=list(by_id),
-                                    format_func=lambda gid, choices_by_id=by_id:
-                                        location_label(choices_by_id[gid]),
-                                    key=selection_key,
-                                )
-                                base = by_id[selected_id]
+                                location_key = f"swu_base_location_{aspect.lower()}"
+                                if st.session_state.get(location_key) not in location_options:
+                                    # Prefer Naboo as each color's initial
+                                    # location; if unavailable under the current
+                                    # filters, use the first alphabetical option.
+                                    st.session_state[location_key] = next(
+                                        (
+                                            gid for gid, option in location_options.items()
+                                            if base_planet(option) == "Naboo"
+                                            or location_label(option).casefold() == "naboo"
+                                        ),
+                                        next(iter(location_options)),
+                                    )
+                                base = location_options[st.session_state[location_key]]
                             else:
                                 base = result["base"]
 
@@ -1126,6 +1129,8 @@ with base_tab:
                             show_base_gallery_card(
                                 base,
                                 all_printings.get(group_id, [base]),
+                                location_options=location_options,
+                                location_key=location_key,
                             )
 
                     st.divider()
