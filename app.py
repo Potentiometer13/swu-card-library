@@ -749,7 +749,9 @@ st.caption("Search cards, build decks, track your collection")
 
 leader_tab, base_tab, card_tab, deck_tab = st.tabs(
     ["1. Leaders", "2. Bases", "3. Cards", "4. Deck Builder"],
-    default="3. Cards"
+    default="3. Cards",
+    key="swu_active_main_tab",
+    on_change="rerun",
 )
 
 with leader_tab:

@@ -73,6 +73,23 @@ def remove_leader(session, index):
         session.pop("swu_selected_leader", None)
 
 
+def change_deck_selection(session, kind, index=None):
+    """Clear one selection and navigate to the corresponding library tab.
+
+    Called by a Streamlit button callback, before widgets are created on
+    the rerun. The main tabs must use key='swu_active_main_tab' and
+    on_change='rerun' for programmatic navigation to work.
+    """
+    if kind == "leader":
+        remove_leader(session, index)
+        session["swu_active_main_tab"] = "1. Leaders"
+    elif kind == "base":
+        session.pop("swu_selected_base", None)
+        session["swu_active_main_tab"] = "2. Bases"
+    else:
+        raise ValueError("Unknown deck selection type")
+
+
 def deck_entries(session):
     return session.setdefault("swu_twin_suns_cards", {})
 
@@ -190,29 +207,59 @@ def render_deck_builder(st):
 
     st.header("Twin Suns Deck Builder")
     st.caption("2 different leaders · 1 base · 80+ draw-deck cards · singleton unless card text overrides")
-    col1, col2, col3 = st.columns(3, gap="medium")
-    for index, col in enumerate((col1, col2)):
+    # Three card slots at half their former width, with aspects on the right.
+    leader1_col, leader2_col, base_col, aspects_col = st.columns(
+        [1, 1, 1, 3], gap="small"
+    )
+    for index, col in enumerate((leader1_col, leader2_col)):
         with col:
             st.markdown(f"**Leader {index + 1}**")
             if index < len(leaders):
-                leader = leaders[index]
-                if leader.get("front_image_url"):
-                    st.image(leader["front_image_url"], width="stretch")
-                st.write(display_card_name(leader))
+                image_url = leaders[index].get("front_image_url")
+                if image_url:
+                    st.image(image_url, width="stretch")
+                else:
+                    st.caption("Image unavailable")
             else:
-                st.info("Select in the Leaders tab")
-    with col3:
+                st.caption("No leader selected")
+            st.button(
+                "Change",
+                key=f"swu_deck_change_leader_{index}",
+                on_click=change_deck_selection,
+                args=(session, "leader", index),
+                use_container_width=True,
+            )
+
+    with base_col:
         st.markdown("**Base**")
         if base:
-            if base.get("front_image_url"):
-                st.image(base["front_image_url"], width="stretch")
-            st.write(display_card_name(base))
+            image_url = base.get("front_image_url")
+            if image_url:
+                st.image(image_url, width="stretch")
+            else:
+                st.caption("Image unavailable")
         else:
-            st.info("Select in the Bases tab")
+            st.caption("No base selected")
+        st.button(
+            "Change",
+            key="swu_deck_change_base",
+            on_click=change_deck_selection,
+            args=(session, "base"),
+            use_container_width=True,
+        )
 
     supply = aspect_supply(leaders, base)
-    supplied_icons = " ".join(f"{ICON[a]}×{supply[a]}" for a in ASPECT_ORDER if supply.get(a))
-    st.markdown(f"**Deck aspects:** {supplied_icons or 'None selected'}")
+    with aspects_col:
+        st.markdown("**Deck Aspects**")
+        chosen_aspects = [a for a in ASPECT_ORDER if supply.get(a)]
+        if chosen_aspects:
+            aspect_columns = st.columns(2, gap="small")
+            for i, aspect in enumerate(chosen_aspects):
+                with aspect_columns[i % 2]:
+                    st.markdown(f"{ICON[aspect]} **{aspect}** ×{supply[aspect]}")
+        else:
+            st.caption("No aspects selected")
+
     st.metric("Draw-deck cards", f"{count} / {DECK_MINIMUM} minimum")
     if errors:
         for issue in errors:
