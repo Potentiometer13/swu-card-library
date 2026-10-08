@@ -30,7 +30,7 @@ from swu_bases import (
 from swu_deck_storage import render_deck_storage
 from swu_twin_suns import (
     render_deck_builder, add_card, card_copy_limit, card_identity,
-    deck_entries, get_selected_leaders,
+    deck_entries, get_selected_leaders, aspect_supply,
 )
 from swu_leaders import (
     leader_page_controls,
@@ -99,23 +99,52 @@ def toggle_double_aspect(aspect):
     reset_page()
 
 
-def initialize_card_aspects_all():
-    """Start the Cards tab with every aspect enabled.
+def sync_card_aspects_from_deck():
+    """Sync Cards aspect buttons only when the leader/base selection changes.
 
-    Unlike the old leader/base-driven defaults, this intentionally does not
-    reset manual aspect choices when either Twin Suns leader or base changes.
-    Version 2 initializes the new default once for existing Streamlit sessions.
+    With no leader or base, show all colors by default. Once a deck selection
+    exists, reflect its aspect icons (including doubles across the leaders and
+    base). Preserve any manual filter edits until the selection next changes.
     """
-    if st.session_state.get("swu_card_aspect_defaults_version") == 2:
+    leaders = get_selected_leaders(st.session_state)
+    base = st.session_state.get("swu_selected_base")
+    if not isinstance(base, dict):
+        base = None
+
+    # Include both card identity and aspect icons, so additions, removals,
+    # replacements, and imported decks trigger a refresh.
+    signature = (
+        tuple(
+            (
+                str(leader.get("gameplay_id") or leader.get("uuid") or ""),
+                tuple(leader.get("aspects") or []),
+            )
+            for leader in leaders
+        ),
+        (
+            str(base.get("gameplay_id") or base.get("uuid") or ""),
+            tuple(base.get("aspects") or []),
+        ) if base else None,
+    )
+
+    if (
+        st.session_state.get("swu_card_aspect_defaults_version") == 3
+        and st.session_state.get("swu_card_aspect_signature") == signature
+    ):
         return
 
+    supplied = aspect_supply(leaders, base) if (leaders or base) else None
+
     for aspect in ASPECTS:
-        # Heroism / Villainy use on/off buttons (1).
-        # The four primary colors start with both icons enabled (2).
-        level = 1 if aspect in ("Heroism", "Villainy") else 2
+        maximum = 1 if aspect in ("Heroism", "Villainy") else 2
+        if supplied is None:
+            level = maximum  # No leaders/base: default to all aspects.
+        else:
+            level = min(maximum, max(0, int(supplied.get(aspect, 0))))
         st.session_state[f"swu_aspect_level_{aspect.lower()}"] = level
 
-    st.session_state["swu_card_aspect_defaults_version"] = 2
+    st.session_state["swu_card_aspect_signature"] = signature
+    st.session_state["swu_card_aspect_defaults_version"] = 3
     reset_page()
 
 
@@ -1228,8 +1257,8 @@ with base_tab:
 with card_tab:
     st.header("Card Search")
 
-    # Initialize all six aspects before Streamlit creates their controls.
-    initialize_card_aspects_all()
+    # Refresh aspect buttons when selected leaders/base change.
+    sync_card_aspects_from_deck()
 
     try:
         sets, available_traits, available_keywords = (
