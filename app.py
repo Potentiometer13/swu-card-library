@@ -653,9 +653,9 @@ with card_tab:
                             type="secondary"
                         )
 
-                    with row_columns[main_index + 1]:
+                       with row_columns[main_index + 1]:
                         st.button(
-                            "×2",
+                            aspect_icons[aspect] * 2,
                             key=f"swu_aspect_double_{slug}",
                             on_click=toggle_double_aspect,
                             args=(aspect,),
