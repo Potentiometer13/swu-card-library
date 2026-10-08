@@ -43,8 +43,23 @@ def change_page(amount, total_pages):
     )
 
 
+
+# --------------------------------------------------
+# DATABASE CONNECTION
+# --------------------------------------------------
+
 @st.cache_resource
 def get_database():
+    return create_client(
+        st.secrets["SUPABASE_URL"],
+        st.secrets["SUPABASE_PUBLISHABLE_KEY"]
+    )
+
+
+# --------------------------------------------------
+# GET MAXIMUM CARD STATISTICS
+# --------------------------------------------------
+
 @st.cache_data(ttl=3600)
 def get_stat_maxima():
     db = get_database()
@@ -60,10 +75,15 @@ def get_stat_maxima():
             .execute()
         )
 
-        value = response.data[0][column] if response.data else None
+        value = (
+            response.data[0][column]
+            if response.data else None
+        )
+
         maxima[column] = max(0, int(value or 0))
 
     return maxima
+
 
     return create_client(
         st.secrets["SUPABASE_URL"],
