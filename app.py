@@ -408,69 +408,66 @@ with card_tab:
 
         
 
-with st.expander("Sets & Rarity"):
 
-    set_names = {
-        item["code"]: item["name"]
-        for item in sets
-    }
+        with st.expander("Sets & Rarity"):
 
-    # Identify Weekly Play sets by their
-    # names or promotional set codes.
-    weekly_play_codes = {
-        code
-        for code, set_name in set_names.items()
-        if (
-            "weekly" in set_name.lower()
-            and "play" in set_name.lower()
-        )
-        or code.upper().endswith(("OP", "WP"))
-    }
+            set_names = {
+                item["code"]: item["name"]
+                for item in sets
+            }
 
-    include_weekly_play = st.checkbox(
-        "Include Weekly Play sets",
-        value=False,
-        key="include_weekly_play",
-        on_change=reset_page
-    )
+            weekly_play_codes = {
+                code
+                for code, set_name in set_names.items()
+                if (
+                    "weekly" in set_name.lower()
+                    and "play" in set_name.lower()
+                )
+                or code.upper().endswith(("OP", "WP"))
+            }
 
-    # Hide Weekly Play sets unless enabled.
-    available_sets = [
-        code
-        for code in set_names
-        if include_weekly_play
-        or code not in weekly_play_codes
-    ]
+            include_weekly_play = st.checkbox(
+                "Include Weekly Play sets",
+                value=False,
+                key="include_weekly_play",
+                on_change=reset_page
+            )
 
-    # Remove selections that become hidden.
-    if "selected_sets" in st.session_state:
-        st.session_state["selected_sets"] = [
-            code
-            for code in st.session_state["selected_sets"]
-            if code in available_sets
-        ]
+            available_sets = [
+                code
+                for code in set_names
+                if include_weekly_play
+                or code not in weekly_play_codes
+            ]
 
-    chosen_sets = st.multiselect(
-        "Sets",
-        available_sets,
-        format_func=lambda code: (
-            f"{code} — {set_names[code]}"
-        ),
-        key="selected_sets",
-        on_change=reset_page
-    )
+            if "selected_sets" in st.session_state:
+                st.session_state["selected_sets"] = [
+                    code
+                    for code in st.session_state["selected_sets"]
+                    if code in available_sets
+                ]
 
-    chosen_rarities = st.multiselect(
-        "Rarity",
-        [
-            "Common",
-            "Uncommon",
-            "Rare",
-            "Legendary",
-            "Special"
-        ],
-        on_change=reset_page
-    )
+            chosen_sets = st.multiselect(
+                "Sets",
+                available_sets,
+                format_func=lambda code: (
+                    f"{code} — {set_names[code]}"
+                ),
+                key="selected_sets",
+                on_change=reset_page
+            )
+
+            chosen_rarities = st.multiselect(
+                "Rarity",
+                [
+                    "Common",
+                    "Uncommon",
+                    "Rare",
+                    "Legendary",
+                    "Special"
+                ],
+                on_change=reset_page
+            )
 
 
 
