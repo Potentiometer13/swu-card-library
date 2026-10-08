@@ -229,34 +229,42 @@ def render_deck_storage(st, make_client):
                 key="swu_export_swudb", use_container_width=False,
             )
 
+    # Streamlit calls this only when the uploaded file changes, not on every
+    # widget interaction or rerun. This prevents a previous upload from
+    # unexpectedly overwriting changes made to the deck afterward.
+    def _auto_import_swudb():
+        state.pop("swu_import_error", None)
+        state.pop("swu_import_success", None)
+        uploaded = state.get("swu_deck_import")
+        if uploaded is None:
+            return
+        try:
+            parsed = parse_swudb_json(uploaded.getvalue())
+            db = make_client(
+                st.secrets["SUPABASE_URL"],
+                st.secrets["SUPABASE_PUBLISHABLE_KEY"],
+            )
+            resolved = resolve_swudb(db, parsed)
+        except Exception as exc:
+            # The active deck is left untouched if parsing or lookup fails.
+            state["swu_import_error"] = str(exc)
+        else:
+            # At the start of the next render this is restored in one step,
+            # before the deck name/author inputs are initialized.
+            state["swu_pending_deck_restore"] = resolved
+            state["swu_import_success"] = f"Imported '{parsed['name']}' successfully."
+
     with st.expander("Import SWUDB JSON", expanded=False):
-        uploaded = st.file_uploader(
-            "Choose a SWUDB deck (.json)", type=["json"], key="swu_deck_import",
+        st.file_uploader(
+            "Choose a SWUDB deck (.json)",
+            type=["json"],
+            key="swu_deck_import",
+            on_change=_auto_import_swudb,
         )
-        if uploaded is not None:
-            try:
-                parsed = parse_swudb_json(uploaded.getvalue())
-            except ValueError as exc:
-                st.error(str(exc))
-            else:
-                st.write(
-                    f"**{parsed['name']}** · "
-                    f"{sum(x[1] for x in parsed['deck'])} draw-deck cards"
-                )
-                st.caption("The card IDs will be checked against the SWU database before replacing your deck.")
-                if st.button("Import and replace current deck", key="swu_import_apply"):
-                    try:
-                        db = make_client(
-                            st.secrets["SUPABASE_URL"],
-                            st.secrets["SUPABASE_PUBLISHABLE_KEY"],
-                        )
-                        resolved = resolve_swudb(db, parsed)
-                        # Restore at the beginning of the next run.
-                        state["swu_pending_deck_restore"] = resolved
-                    except Exception as exc:
-                        st.error(f"Import failed: {exc}")
-                    else:
-                        st.rerun()
+        if state.get("swu_import_error"):
+            st.error(f"Import failed: {state['swu_import_error']}")
+        elif state.get("swu_import_success"):
+            st.success(state["swu_import_success"])
 
     with st.expander("Online deck saves (account required)", expanded=True):
         if not state.get("swu_auth_user_id"):
