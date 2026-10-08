@@ -546,14 +546,16 @@ with card_tab:
                         )
 
                     else:
+                        # Grey background, but full-color
+                        # aspect symbols and readable text
                         background = "rgba(107,114,128,0.14)"
-                        foreground = "#9CA3AF"
-                        effect = "grayscale(75%)"
-                        opacity = "0.70"
+                        foreground = "inherit"
+                        effect = "none"
+                        opacity = "1"
 
-                        # Invisible border maintains size
                         border = "2px solid transparent"
                         shadow = "none"
+
 
                     css += f"""
                     {selector},
