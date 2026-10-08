@@ -20,12 +20,10 @@ ASPECT_COLUMNS = {
 }
 
 ASPECT_MODES = [
-    "Selected only",
-    "Any selected",
-    "All selected",
+    "Deck Compatibility",
+    "Any Selected",
     "Exact",
-    "Exclude selected",
-    "Deck compatibility"
+    "Exclude Selected"
 ]
 
 if "page" not in st.session_state:
@@ -145,82 +143,109 @@ def has_any_aspect_filter():
     )
 
 
-def apply_aspect_filters(query, mode, levels, neutral):
+
+def apply_aspect_filters(query, mode, levels):
+
     columns = ASPECT_COLUMNS
-    empty = is_neutral_filter()
 
-    if mode in ("Selected only", "Deck compatibility"):
+    # Aspects currently enabled by the user
+    selected = [
+        aspect for aspect in ASPECTS
+        if levels.get(aspect, 0) > 0
+    ]
+
+    # -----------------------------------------
+    # MODE 1: DECK COMPATIBILITY
+    # -----------------------------------------
+    # Each card's aspect count must fit within
+    # the selected limits.
+    # Neutral cards are always included.
+
+    if mode == "Deck Compatibility":
+
         for aspect, column in columns.items():
-            query = query.lte(column, levels[aspect])
+            query = query.lte(
+                column,
+                levels.get(aspect, 0)
+            )
 
-        if not neutral:
-            query = query.or_(has_any_aspect_filter())
+    # -----------------------------------------
+    # MODE 2: ANY SELECTED
+    # -----------------------------------------
+    # Match at least one selected aspect.
+    # Additional unselected aspects are allowed.
+    # Neutral cards are excluded unless
+    # nothing is selected.
 
-    elif mode == "Any selected":
-        conditions = [
-            f"{columns[a]}.gt.0"
-            for a in ASPECTS if levels[a] > 0
-        ]
+    elif mode == "Any Selected":
 
-        if neutral:
-            conditions.append(empty)
+        if selected:
 
-        if not conditions:
-            return None
+            conditions = [
+                f"{columns[aspect]}.gt.0"
+                for aspect in selected
+            ]
 
-        query = query.or_(",".join(conditions))
+            query = query.or_(
+                ",".join(conditions)
+            )
 
-    elif mode == "All selected":
-        conditions = [
-            f"{columns[a]}.gte.{levels[a]}"
-            for a in ASPECTS if levels[a] > 0
-        ]
-
-        if conditions:
-            if neutral:
-                query = query.or_(
-                    "and(" + ",".join(conditions) +
-                    ")," + empty
-                )
-            else:
-                for aspect in ASPECTS:
-                    if levels[aspect] > 0:
-                        query = query.gte(
-                            columns[aspect], levels[aspect]
-                        )
-        elif neutral:
+        else:
+            # Nothing selected: neutral only
             for column in columns.values():
                 query = query.eq(column, 0)
-        else:
-            return None
+
+    # -----------------------------------------
+    # MODE 3: EXACT
+    # -----------------------------------------
+    # Require precisely the selected number
+    # of icons for every aspect.
+    # Nothing selected: neutral only.
 
     elif mode == "Exact":
-        if not any(levels.values()) and not neutral:
-            return None
 
-        conditions = [
-            f"{columns[a]}.eq.{levels[a]}"
-            for a in ASPECTS
-        ]
-
-        if neutral and any(levels.values()):
-            query = query.or_(
-                "and(" + ",".join(conditions) +
-                ")," + empty
-            )
-        else:
-            for aspect, column in columns.items():
-                query = query.eq(column, levels[aspect])
-
-    elif mode == "Exclude selected":
         for aspect, column in columns.items():
-            if levels[aspect] > 0:
-                query = query.eq(column, 0)
+            query = query.eq(
+                column,
+                levels.get(aspect, 0)
+            )
 
-        if not neutral:
-            query = query.or_(has_any_aspect_filter())
+    # -----------------------------------------
+    # MODE 4: EXCLUDE SELECTED
+    # -----------------------------------------
+    # Exclude any card containing a selected
+    # aspect, whether single or double.
+    #
+    # With selections: neutral cards included.
+    # No selections: all non-neutral cards.
+
+    elif mode == "Exclude Selected":
+
+        if selected:
+
+            for aspect in selected:
+                query = query.eq(
+                    columns[aspect], 0
+                )
+
+        else:
+
+            conditions = [
+                f"{column}.gt.0"
+                for column in columns.values()
+            ]
+
+            query = query.or_(
+                ",".join(conditions)
+            )
+
+    else:
+        raise ValueError(
+            f"Unknown aspect filter mode: {mode}"
+        )
 
     return query
+
 
 
 
@@ -433,6 +458,16 @@ with card_tab:
         # -----------------------------------------
 
         with st.expander("Aspects", expanded=True):
+            
+            # Select how aspects are filtered
+            aspect_mode = st.selectbox(
+                "Aspect filter mode",
+                ASPECT_MODES,
+                index=0,
+                key="aspect_filter_mode_v2",
+                on_change=reset_page
+            )
+
 
             aspect_order = [
                 "Heroism", "Villainy",
@@ -665,23 +700,7 @@ with card_tab:
                             type="secondary"
                         )
 
-            # -----------------------------------------
-            # EXISTING FILTER OPTIONS
-            # -----------------------------------------
-
-            aspect_mode = st.selectbox(
-                "Aspect filter mode",
-                ASPECT_MODES,
-                on_change=reset_page
-            )
-
-            include_neutral = st.checkbox(
-                "Include neutral cards",
-                value=True,
-                on_change=reset_page
-            )
-
-
+           
         with st.expander("Traits & Keywords"):
             chosen_traits = st.multiselect(
                 "Traits (match any selected)",
@@ -885,8 +904,7 @@ with card_tab:
                 query = apply_aspect_filters(
                     query,
                     aspect_mode,
-                    levels,
-                    include_neutral
+                    levels
                 )
 
                 if query is None:
