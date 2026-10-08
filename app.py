@@ -34,6 +34,21 @@ if "page" not in st.session_state:
 
 def reset_page():
     st.session_state.page = 1
+    
+def toggle_aspect(aspect):
+    key = f"swu_aspect_level_{aspect.lower()}"
+    current = st.session_state[key]
+
+    st.session_state[key] = 0 if current > 0 else 1
+    reset_page()
+
+
+def toggle_double_aspect(aspect):
+    key = f"swu_aspect_level_{aspect.lower()}"
+    current = st.session_state[key]
+
+    st.session_state[key] = 1 if current == 2 else 2
+    reset_page()
 
 
 def change_page(amount, total_pages):
@@ -412,41 +427,245 @@ with card_tab:
             min_power, max_power = number_range("Power", maxima["power"])
             min_hp, max_hp = number_range("HP", maxima["hp"])
 
+        
+        # -----------------------------------------
+        # ASPECT FILTER - COLORED BUTTON GRID
+        # -----------------------------------------
+
         with st.expander("Aspects", expanded=True):
-            st.caption(
-                "None excludes a color. Single allows up to "
-                "one icon. Double allows up to two."
-            )
+
+            aspect_order = [
+                "Heroism", "Villainy",
+                "Vigilance", "Command",
+                "Aggression", "Cunning"
+            ]
+
+            aspect_icons = {
+                "Heroism": "⚪",
+                "Villainy": "⚫",
+                "Vigilance": "🔵",
+                "Command": "🟢",
+                "Aggression": "🔴",
+                "Cunning": "🟡"
+            }
+
+            aspect_palette = {
+                "Heroism": ("#FFFFFF", "#171717"),
+                "Villainy": ("#252831", "#FFFFFF"),
+                "Vigilance": ("#307FC1", "#FFFFFF"),
+                "Command": ("#258852", "#FFFFFF"),
+                "Aggression": ("#C23E48", "#FFFFFF"),
+                "Cunning": ("#F0C746", "#202124")
+            }
+
+            # -----------------------------------------
+            # INITIALIZE ASPECT STATES
+            # -----------------------------------------
 
             levels = {}
 
-            for aspect in ASPECTS[:4]:
-                levels[aspect] = st.selectbox(
-                    aspect,
-                    options=[0, 1, 2],
-                    index=2,
-                    format_func=lambda n: {
-                        0: "None",
-                        1: "Single",
-                        2: "Double"
-                    }[n],
-                    key=f"aspect_{aspect}",
-                    on_change=reset_page
+            for aspect in aspect_order:
+                key = f"swu_aspect_level_{aspect.lower()}"
+
+                if key not in st.session_state:
+                    default = (
+                        1 if aspect in ("Heroism", "Villainy")
+                        else 2
+                    )
+                    st.session_state[key] = default
+
+                levels[aspect] = st.session_state[key]
+
+            # -----------------------------------------
+            # BUTTON STYLING
+            # -----------------------------------------
+
+            css = """
+            <style>
+            [class*="st-key-swu_aspect_main_"] button,
+            [class*="st-key-swu_aspect_double_"] button {
+                min-height: 48px;
+                width: 100%;
+                border-radius: 9px !important;
+                padding: 4px 2px !important;
+                font-weight: 600 !important;
+                transition:
+                    background-color 0.15s ease,
+                    box-shadow 0.15s ease;
+            }
+
+            [class*="st-key-swu_aspect_main_"] button p,
+            [class*="st-key-swu_aspect_double_"] button p {
+                font-size: 0.73rem !important;
+                line-height: 1.2 !important;
+                text-align: center !important;
+            }
+            """
+
+            # -----------------------------------------
+            # COLOR EACH BUTTON BASED ON ITS STATE
+            # -----------------------------------------
+
+            for aspect in aspect_order:
+
+                slug = aspect.lower()
+                level = levels[aspect]
+
+                color, text_color = aspect_palette[aspect]
+
+                for kind in ("main", "double"):
+
+                    if kind == "double" and aspect in (
+                        "Heroism", "Villainy"
+                    ):
+                        continue
+
+                    # Main button active when level >= 1
+                    # Double button active when level == 2
+
+                    active = (
+                        level > 0 if kind == "main"
+                        else level == 2
+                    )
+
+                    selector = (
+                        f".st-key-swu_aspect_{kind}_{slug} button"
+                    )
+
+                    if active:
+                        background = color
+                        foreground = text_color
+                        effect = "none"
+                        opacity = "1"
+
+                        # Border ONLY when selected
+                        border = "2px solid #374151"
+                        shadow = (
+                            "0 0 0 2px "
+                            "rgba(156,163,175,0.45)"
+                        )
+
+                    else:
+                        background = "rgba(107,114,128,0.14)"
+                        foreground = "#9CA3AF"
+                        effect = "grayscale(75%)"
+                        opacity = "0.70"
+
+                        # Invisible border maintains size
+                        border = "2px solid transparent"
+                        shadow = "none"
+
+                    css += f"""
+                    {selector},
+                    {selector}:hover,
+                    {selector}:focus-visible {{
+                        background-color: {background}
+                            !important;
+
+                        color: {foreground}
+                            !important;
+
+                        border: {border}
+                            !important;
+
+                        box-shadow: {shadow}
+                            !important;
+
+                        filter: {effect}
+                            !important;
+
+                        opacity: {opacity}
+                            !important;
+                    }}
+
+                    {selector} p,
+                    {selector}:hover p,
+                    {selector}:focus-visible p {{
+                        color: {foreground} !important;
+                    }}
+                    """
+
+            css += "</style>"
+
+            st.markdown(
+                css,
+                unsafe_allow_html=True
+            )
+
+            # -----------------------------------------
+            # ROW 1: HEROISM AND VILLAINY
+            # -----------------------------------------
+
+            top_left, top_right = st.columns(
+                2, gap="small"
+            )
+
+            with top_left:
+                st.button(
+                    "⚪ Heroism",
+                    key="swu_aspect_main_heroism",
+                    on_click=toggle_aspect,
+                    args=("Heroism",),
+                    use_container_width=True,
+                    type="secondary"
                 )
 
-            levels["Heroism"] = int(st.checkbox(
-                "Heroism",
-                value=True,
-                key="aspect_heroism",
-                on_change=reset_page
-            ))
+            with top_right:
+                st.button(
+                    "⚫ Villainy",
+                    key="swu_aspect_main_villainy",
+                    on_click=toggle_aspect,
+                    args=("Villainy",),
+                    use_container_width=True,
+                    type="secondary"
+                )
 
-            levels["Villainy"] = int(st.checkbox(
-                "Villainy",
-                value=True,
-                key="aspect_villainy",
-                on_change=reset_page
-            ))
+            # -----------------------------------------
+            # ROWS 2-3: COLORED ASPECTS
+            # -----------------------------------------
+
+            color_pairs = [
+                ("Vigilance", "Command"),
+                ("Aggression", "Cunning")
+            ]
+
+            for left_aspect, right_aspect in color_pairs:
+
+                row_columns = st.columns(
+                    [3, 1, 3, 1],
+                    gap="small"
+                )
+
+                for aspect, main_index in [
+                    (left_aspect, 0),
+                    (right_aspect, 2)
+                ]:
+
+                    slug = aspect.lower()
+
+                    with row_columns[main_index]:
+                        st.button(
+                            f"{aspect_icons[aspect]} {aspect}",
+                            key=f"swu_aspect_main_{slug}",
+                            on_click=toggle_aspect,
+                            args=(aspect,),
+                            use_container_width=True,
+                            type="secondary"
+                        )
+
+                    with row_columns[main_index + 1]:
+                        st.button(
+                            "×2",
+                            key=f"swu_aspect_double_{slug}",
+                            on_click=toggle_double_aspect,
+                            args=(aspect,),
+                            use_container_width=True,
+                            type="secondary"
+                        )
+
+            # -----------------------------------------
+            # EXISTING FILTER OPTIONS
+            # -----------------------------------------
 
             aspect_mode = st.selectbox(
                 "Aspect filter mode",
@@ -460,10 +679,6 @@ with card_tab:
                 on_change=reset_page
             )
 
-            st.caption(
-                "Neutral cards are included independently of "
-                "the selected aspect mode when enabled."
-            )
 
         with st.expander("Traits & Keywords"):
             chosen_traits = st.multiselect(
