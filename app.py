@@ -380,12 +380,26 @@ with card_tab:
                 on_change=reset_page
             )
 
-            arenas = st.multiselect(
-                "Arena",
-                ["Ground", "Space"],
-                help="Leave empty to include all arenas and non-units.",
-                on_change=reset_page
-            )
+            st.markdown("**Arena**")
+
+            arena_col1, arena_col2 = st.columns(2)
+
+            with arena_col1:
+                ground_selected = st.checkbox(
+                    "Ground",
+                    value=False,
+                    key="arena_ground",
+                    on_change=reset_page
+                )
+
+            with arena_col2:
+                space_selected = st.checkbox(
+                    "Space",
+                    value=False,
+                    key="arena_space",
+                    on_change=reset_page
+                )
+
 
             maxima = get_stat_maxima()
             min_cost, max_cost = number_range("Cost", maxima["cost"])
@@ -589,8 +603,22 @@ with card_tab:
 
                 query = query.in_("card_type", card_types)
 
-                if arenas:
-                    query = query.in_("arena", arenas)
+                
+                # Only filter units when exactly one
+                # arena checkbox is selected.
+                # Events and Upgrades remain included.
+
+                if ground_selected != space_selected:
+                    selected_arena = (
+                        "Ground" if ground_selected
+                        else "Space"
+                    )
+
+                    query = query.or_(
+                        f"card_type.neq.Unit,"
+                        f"arena.eq.{selected_arena}"
+                    )
+
 
                 if chosen_sets:
                     query = query.in_(
