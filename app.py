@@ -27,6 +27,7 @@ from swu_bases import (
     build_base_search_results,
     PRIMARY_BASE_ASPECTS,
 )
+from swu_deck_storage import render_deck_storage
 from swu_twin_suns import (
     render_deck_builder, add_card, card_copy_limit, card_identity,
     deck_entries,
@@ -1820,4 +1821,6 @@ with card_tab:
 # --------------------------------------------------
 
 with deck_tab:
+    render_deck_storage(st, create_client)
+    st.divider()
     render_deck_builder(st)
