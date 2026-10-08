@@ -18,6 +18,7 @@ from swu_bases import (
     base_aspect_names,
     base_planet,
     location_label,
+    force_location_label,
     standard_location_sort,
     leader_primary_aspects,
     matches_base_filters,
@@ -247,19 +248,32 @@ BASE_ASPECTS = ["Vigilance", "Command", "Aggression", "Cunning"]
 
 
 def sync_base_filters_from_leader(force=False):
-    """Keep hand-edited filters until the chosen leader actually changes."""
-    current_colors = leader_primary_aspects(st.session_state)
+    """Default to Deck Compatibility with colors not present on the leader(s).
+
+    Preserve manual changes until the leader changes or Clear Filters is used.
+    The version flag applies these new defaults once to existing sessions too.
+    """
+    leader_colors = leader_primary_aspects(st.session_state)
+    available_colors = set(BASE_ASPECTS) - leader_colors
     leader = st.session_state.get("swu_selected_leader") or {}
     multi = st.session_state.get("swu_selected_leaders") or []
     leader_ids = [str(leader.get("gameplay_id") or leader.get("uuid") or "")]
     leader_ids += sorted(str(x.get("gameplay_id") or x.get("uuid") or "")
                          for x in multi if isinstance(x, dict))
     fingerprint = tuple(leader_ids)
-    if force or st.session_state.get("swu_base_synced_leader") != fingerprint:
+    defaults_version = "deck_compatibility_outside_leader_v1"
+    if (
+        force
+        or st.session_state.get("swu_base_synced_leader") != fingerprint
+        or st.session_state.get("swu_base_defaults_version") != defaults_version
+    ):
         st.session_state["swu_base_synced_leader"] = fingerprint
+        st.session_state["swu_base_defaults_version"] = defaults_version
         for aspect in BASE_ASPECTS:
-            st.session_state[f"swu_base_aspect_{aspect.lower()}"] = (aspect in current_colors)
-        st.session_state["swu_base_aspect_mode"] = "Exclude Selected"
+            st.session_state[f"swu_base_aspect_{aspect.lower()}"] = (
+                aspect in available_colors
+            )
+        st.session_state["swu_base_aspect_mode"] = "Deck Compatibility"
         reset_base_page()
 
 
@@ -289,7 +303,7 @@ def clear_base_filters():
         "swu_base_search": "",
         "swu_base_ability_contains": "",
         "swu_base_ability_excludes": "",
-        "swu_base_aspect_mode": "Exclude Selected",
+        "swu_base_aspect_mode": "Deck Compatibility",
         "swu_base_traits": [],
         "swu_base_keywords": [],
         "swu_base_sets": [],
@@ -954,8 +968,8 @@ with leader_tab:
 with base_tab:
     st.header("Base Library")
 
-    # The base defaults follow the current Leader, but ONLY when it changes.
-    # This must run before Streamlit creates any Base filter widgets.
+    # Base defaults follow selected leader(s), and refresh when the defaults
+    # version changes. This must run before Streamlit creates the widgets.
     sync_base_filters_from_leader()
     selected_base_panel()
     st.divider()
@@ -995,10 +1009,10 @@ with base_tab:
         with st.expander("Aspects", expanded=True):
             base_aspect_mode = st.selectbox(
                 "Aspect filter mode",
-                ["Exclude Selected", "All Selected", "Deck Compatibility", "Exact"],
+                ["Deck Compatibility", "All Selected", "Exact", "Exclude Selected"],
                 index=0, key="swu_base_aspect_mode", on_change=reset_base_page)
             base_levels = base_aspect_grid()
-            st.caption("Defaults exclude your leader's primary aspect colors. "
+            st.caption("Defaults to colors not already on your selected leader(s). "
                        "Heroism and Villainy are ignored. Change these buttons anytime.")
 
         with st.expander("Traits & Keywords"):
@@ -1045,7 +1059,7 @@ with base_tab:
                 key="swu_base_page_size", on_change=reset_base_page)
         with row_col:
             bases_per_row = st.selectbox(
-                "Bases per row", [1, 2, 3, 4], index=1,
+                "Bases per row", [1, 2, 3, 4], index=2,
                 key="swu_bases_per_row")
 
         if "swu_base_page" not in st.session_state:
@@ -1090,7 +1104,7 @@ with base_tab:
                     end = start + len(visible)
                     st.caption(
                         f"Showing {start + 1:,}–{end:,} of {total_bases:,} bases. "
-                        "Standard colors first, then colorless, then ability bases."
+                        "Standard colors first, then colorless, then Force and other ability bases."
                     )
                     base_page_controls(total_pages, "top")
                     st.divider()
@@ -1102,18 +1116,18 @@ with base_tab:
                             # but render the dropdown beneath the image.
                             location_options = None
                             location_key = None
-                            if result["kind"] == "standard":
+                            location_label_func = None
+                            if result["kind"] in ("standard", "force"):
                                 aspect = result["aspect"]
                                 location_options = {
                                     str(base.get("gameplay_id") or base["uuid"]): base
                                     for base in result["choices"]
                                 }
-                                location_key = f"swu_base_location_{aspect.lower()}"
-                                if st.session_state.get(location_key) not in location_options:
-                                    # Prefer Naboo as each color's initial
-                                    # location; if unavailable under the current
-                                    # filters, use the first alphabetical option.
-                                    st.session_state[location_key] = next(
+                                if result["kind"] == "standard":
+                                    location_key = f"swu_base_location_{aspect.lower()}"
+                                    location_label_func = location_label
+                                    # Standard bases default to Naboo.
+                                    preferred = next(
                                         (
                                             gid for gid, option in location_options.items()
                                             if base_planet(option) == "Naboo"
@@ -1121,6 +1135,15 @@ with base_tab:
                                         ),
                                         next(iter(location_options)),
                                     )
+                                else:
+                                    # LOF Force-token bases: two locations per color.
+                                    # Choices are alphabetized in swu_bases.py.
+                                    location_key = f"swu_base_force_location_{aspect.lower()}"
+                                    location_label_func = force_location_label
+                                    preferred = next(iter(location_options))
+
+                                if st.session_state.get(location_key) not in location_options:
+                                    st.session_state[location_key] = preferred
                                 base = location_options[st.session_state[location_key]]
                             else:
                                 base = result["base"]
@@ -1131,6 +1154,7 @@ with base_tab:
                                 all_printings.get(group_id, [base]),
                                 location_options=location_options,
                                 location_key=location_key,
+                                location_label_func=location_label_func,
                             )
 
                     st.divider()

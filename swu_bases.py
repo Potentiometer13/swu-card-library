@@ -179,7 +179,8 @@ def show_base_dialog(base, printings):
 
 
 def show_base_gallery_card(
-    base, printings, location_options=None, location_key=None
+    base, printings, location_options=None, location_key=None,
+    location_label_func=None
 ):
     """Clickable artwork, optional location dropdown, then Add Base."""
     variants = sorted(list(printings or [base]), key=printing_sort_key)
@@ -236,13 +237,15 @@ def show_base_gallery_card(
     ):
         show_base_dialog(base, variants)
 
-    # Only the four standard-color cards have a location selector.
-    # Put it between the image and Add Base; don't display a label.
+    # Standard 30-HP and common LOF Force bases may offer locations.
+    # Render the selector below the image with no visible label.
     if location_options:
         st.selectbox(
             "Base location",
             options=list(location_options),
-            format_func=lambda gid: location_label(location_options[gid]),
+            format_func=lambda gid: (location_label_func or location_label)(
+                location_options[gid]
+            ),
             key=location_key,
             label_visibility="collapsed",
         )
@@ -344,6 +347,51 @@ def location_label(base):
     return re.sub(r"(?i)^other\s+location\s*[-–—:]\s*", "", name).strip()
 
 
+# Legends of the Force has eight common 28-HP bases (two per aspect)
+# with the identical Force token ability. Show one result per aspect and let
+# the user choose either actual location/printing for their deck.
+FORCE_COMMON_LOCATION_BY_NAME = {
+    "nightsister lair": "Dathomir",
+    "shadowed undercity": "Coruscant",
+    "jedi temple": "Coruscant",
+    "starlight temple": "Starlight Beacon",
+    "fortress vader": "Mustafar",
+    "strangled cliffs": "Dathomir",
+    "crystal caves": "Ilum",
+    "the holy city": "Jedha",
+}
+
+
+def is_force_common_base(base):
+    """Identify the LOF common Force-token bases, not the rare 25-HP ones."""
+    aspects = base_aspect_names(base)
+    text = str(base.get("base_ability_search_text") or "").casefold()
+    return (
+        str(base.get("set_code") or "").upper() == "LOF"
+        and str(base.get("rarity") or "").casefold() == "common"
+        and int(base.get("hp") or 0) == 28
+        and len(aspects) == 1
+        and next(iter(aspects)) in PRIMARY_BASE_ASPECTS
+        and "when a friendly force unit attacks" in text
+        and "the force is with you" in text
+    )
+
+
+def force_location_label(base):
+    """Label a Force base by location, not its building's full card name."""
+    subtitle = str(base.get("subtitle") or "").strip()
+    if subtitle:
+        return subtitle
+    raw_name = str(base.get("name") or "").strip()
+    # Covers imports where the location is part of the name string.
+    simple_name = re.split(r"\s+[-–—]\s+", raw_name, maxsplit=1)[0].strip()
+    return FORCE_COMMON_LOCATION_BY_NAME.get(simple_name.casefold(), raw_name)
+
+
+def force_location_sort(base):
+    return (force_location_label(base).casefold(), base_display_name(base).casefold())
+
+
 def standard_location_sort(base):
     # Sort exactly as the dropdown is displayed, alphabetically by location.
     # Use the set only as a hidden tie-breaker if names are identical.
@@ -437,7 +485,7 @@ def first_matching_printing(base, grouped, filters):
 # --------------------------------------------------
 
 def build_base_search_results(all_bases, all_printings, filters_config):
-    """One searchable result per standard color, then colorless, then ability bases.
+    """Standard colors first, then colorless, then Force bases and other abilities.
 
     Each standard-color result retains its location choices, so the user selects
     a *real* printed base card without flooding results with all locations.
@@ -445,6 +493,7 @@ def build_base_search_results(all_bases, all_printings, filters_config):
     twice in this list.
     """
     standard = {aspect: [] for aspect in PRIMARY_BASE_ASPECTS}
+    force = {aspect: [] for aspect in PRIMARY_BASE_ASPECTS}
     neutral = []
     special = []
 
@@ -453,6 +502,9 @@ def build_base_search_results(all_bases, all_printings, filters_config):
         if category == "standard":
             aspect = next(iter(base_aspect_names(base)))
             standard[aspect].append(base)
+        elif is_force_common_base(base):
+            aspect = next(iter(base_aspect_names(base)))
+            force[aspect].append(base)
         elif category == "neutral":
             neutral.append(base)
         else:
@@ -488,6 +540,26 @@ def build_base_search_results(all_bases, all_printings, filters_config):
         matching = first_matching_printing(base, all_printings, neutral_filters)
         if matching is not None:
             results.append({"kind": "neutral", "base": matching})
+
+    # Next: one searchable Force-token common base per aspect, each with its
+    # two locations (if both survive the active search filters).
+    for aspect in PRIMARY_BASE_ASPECTS:
+        choices = sorted(
+            (
+                matched
+                for base in force[aspect]
+                if (matched := first_matching_printing(
+                    base, all_printings, filters_config
+                )) is not None
+            ),
+            key=force_location_sort,
+        )
+        if choices:
+            results.append({
+                "kind": "force",
+                "aspect": aspect,
+                "choices": choices,
+            })
 
     # Last: every other base (ability-bearing or unusually configured).
     for base in special:
