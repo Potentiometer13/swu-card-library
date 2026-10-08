@@ -8,6 +8,8 @@ paginates unique gameplay IDs rather than printing rows.
 from collections import OrderedDict, defaultdict
 from copy import copy
 from html import escape
+import json
+import re
 
 import streamlit as st
 
@@ -87,12 +89,10 @@ def load_printing_options(db, visible_cards):
         for c in visible_cards
     ))
     grouped = defaultdict(list)
-    
     fields = (
         "uuid,gameplay_id,collector_number,set_code,"
         "variant_type,front_image_url,name,subtitle"
     )
-
     # Chunk UUIDs to avoid very long REST URLs and project row limits.
     for offset in range(0, len(ids), 25):
         subset = ids[offset:offset + 25]
@@ -112,7 +112,7 @@ def load_printing_options(db, visible_cards):
 
 def printing_id(card):
     """Display IDs consistently as SET_NUMBER (unless already prefixed)."""
-    number = str(card.get("collector_number") or card.get("card_number") or "").strip()
+    number = str(card.get("collector_number") or "").strip()
     set_code = str(card.get("set_code") or "").strip()
     if not number:
         return "Unknown ID"
@@ -125,43 +125,113 @@ def printing_label(card):
     return f"{printing_id(card)} · {card.get('variant_type') or 'Other printing'}"
 
 
-def show_grouped_card(card, printing_options):
-    """Use inside the existing st.columns gallery slot.
-
-    Displays only image and centered printing ID, with a small printing picker
-    beneath cards with multiple versions.
-    """
-    variants = list(printing_options or [card])
-    variants.sort(key=printing_sort_key)
+@st.dialog("Card printings", width="large", on_dismiss="rerun")
+def show_printing_dialog(card, printings):
+    """Open a detail window; printing selection stays out of the gallery."""
+    variants = sorted(list(printings or [card]), key=printing_sort_key)
     group_id = str(card.get("gameplay_id") or card["uuid"])
     widget_key = f"swu_printing_choice_{group_id}"
+    by_id = {str(p["uuid"]): p for p in variants}
 
-    variant_uuids = [str(p["uuid"]) for p in variants]
-    preferred = str(card["uuid"])
-    if widget_key not in st.session_state or st.session_state[widget_key] not in variant_uuids:
-        st.session_state[widget_key] = preferred if preferred in variant_uuids else variant_uuids[0]
+    if st.session_state.get(widget_key) not in by_id:
+        preferred = str(card["uuid"])
+        st.session_state[widget_key] = (
+            preferred if preferred in by_id else next(iter(by_id))
+        )
 
-    chosen_id = st.session_state[widget_key]
-    chosen = next(p for p in variants if str(p["uuid"]) == chosen_id)
-    image = chosen.get("front_image_url")
-    if image:
-        st.image(image, use_container_width=True)
-    else:
-        st.caption("Image unavailable")
+    name = card.get("name") or "Card"
+    subtitle = card.get("subtitle")
+    st.subheader(name)
+    if subtitle:
+        st.caption(subtitle)
+
+    image_column, options_column = st.columns([3, 2], gap="large")
+
+    with options_column:
+        st.selectbox(
+            "Printing",
+            options=list(by_id),
+            format_func=lambda uid: printing_label(by_id[uid]),
+            key=widget_key,
+        )
+        chosen = by_id[st.session_state[widget_key]]
+        st.caption(f"{len(variants)} available printing(s)")
+        st.markdown(f"**Card ID:** {escape(printing_id(chosen))}")
+
+    with image_column:
+        if chosen.get("front_image_url"):
+            st.image(chosen["front_image_url"], width="stretch")
+        else:
+            st.info("Image unavailable")
+
+
+def show_grouped_card(card, printing_options):
+    """Draw a clickable gallery card; printings appear only in its dialog.
+
+    A native st.button is styled with the card image as its background, so a
+    click calls st.dialog within the same Streamlit session (no extra packages).
+    """
+    variants = sorted(list(printing_options or [card]), key=printing_sort_key)
+    group_id = str(card.get("gameplay_id") or card["uuid"])
+    widget_key = f"swu_printing_choice_{group_id}"
+    by_id = {str(p["uuid"]): p for p in variants}
+
+    if st.session_state.get(widget_key) not in by_id:
+        preferred = str(card["uuid"])
+        st.session_state[widget_key] = (
+            preferred if preferred in by_id else next(iter(by_id))
+        )
+
+    chosen = by_id[st.session_state[widget_key]]
+    image = str(chosen.get("front_image_url") or "").strip()
+
+    # Streamlit adds this key as a class to the button container.
+    # Keep keys CSS-safe even if the API uses non-UUID identifiers.
+    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "_", str(card["uuid"]))
+    button_key = f"swu_gallery_card_{safe_id}"
+
+    if image.startswith(("https://", "http://")):
+        selector = f".st-key-{button_key} button"
+        css_url = json.dumps(image).replace("<", "\\3c ")
+        st.markdown(
+            f"""
+            <style>
+            {selector}, {selector}:hover, {selector}:focus-visible {{
+                width: 100% !important;
+                height: auto !important;
+                min-height: 0 !important;
+                aspect-ratio: 5 / 7 !important;
+                display: block !important;
+                padding: 0 !important;
+                border: none !important;
+                border-radius: 8px !important;
+                background: transparent url({css_url})
+                    center center / contain no-repeat !important;
+                box-shadow: none !important;
+            }}
+            {selector}:hover {{
+                box-shadow: 0 0 0 2px #4B5563 !important;
+                cursor: pointer !important;
+            }}
+            {selector}:focus-visible {{
+                outline: 3px solid #6B7280 !important;
+            }}
+            {selector} p {{ opacity: 0 !important; }}
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    if st.button(
+        f"View {card.get('name') or 'card'} printings",
+        key=button_key,
+        use_container_width=True,
+        help="Click card to view available printings",
+    ):
+        show_printing_dialog(card, variants)
 
     st.markdown(
         '<p style="text-align:center; font-weight:600; margin:0.25rem 0">'
         + escape(printing_id(chosen)) + '</p>',
         unsafe_allow_html=True,
     )
-
-    if len(variants) > 1:
-        with st.popover(f"Printings ({len(variants)})", use_container_width=True):
-            st.selectbox(
-                "Choose printing",
-                options=variant_uuids,
-                format_func=lambda uid: printing_label(
-                    next(p for p in variants if str(p["uuid"]) == uid)
-                ),
-                key=widget_key,
-            )
