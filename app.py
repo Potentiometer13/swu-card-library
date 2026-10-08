@@ -45,6 +45,26 @@ def change_page(amount, total_pages):
 
 @st.cache_resource
 def get_database():
+@st.cache_data(ttl=3600)
+def get_stat_maxima():
+    db = get_database()
+    maxima = {}
+
+    for column in ["cost", "power", "hp"]:
+        response = (
+            db.table("card_printings")
+            .select(column)
+            .in_("card_type", ["Unit", "Event", "Upgrade"])
+            .order(column, desc=True, nullsfirst=False)
+            .limit(1)
+            .execute()
+        )
+
+        value = response.data[0][column] if response.data else None
+        maxima[column] = max(0, int(value or 0))
+
+    return maxima
+
     return create_client(
         st.secrets["SUPABASE_URL"],
         st.secrets["SUPABASE_PUBLISHABLE_KEY"]
@@ -169,15 +189,16 @@ def apply_aspect_filters(query, mode, levels, neutral):
 
 
 
-def apply_numeric_filter(query, column, minimum, maximum):
-
-    # A minimum of 0 means no minimum restriction.
-    # This preserves Events and Upgrades with NULL stats.
+def apply_numeric_filter(
+    query, column, minimum, maximum, available_max
+):
+    # Zero minimum does not restrict results.
     if minimum is not None and minimum > 0:
         query = query.gte(column, minimum)
 
-    # Only apply maximum when explicitly entered.
-    if maximum is not None:
+    # Maximum only restricts results if reduced
+    # below the highest available database value.
+    if maximum is not None and maximum < available_max:
         query = query.lte(column, maximum)
 
     return query
@@ -215,7 +236,8 @@ def page_controls(total_pages, location):
 
 
 
-def number_range(label):
+
+def number_range(label, highest):
     left, right = st.columns(2)
 
     with left:
@@ -232,13 +254,15 @@ def number_range(label):
         maximum = st.number_input(
             f"{label} max",
             min_value=0,
-            value=None,
+            max_value=highest,
+            value=highest,
             step=1,
-            key=f"{label}_max",
+            key=f"{label}_max_db",
             on_change=reset_page
         )
 
     return minimum, maximum
+
 
 
 
@@ -343,9 +367,10 @@ with card_tab:
                 on_change=reset_page
             )
 
-            min_cost, max_cost = number_range("Cost")
-            min_power, max_power = number_range("Power")
-            min_hp, max_hp = number_range("HP")
+            maxima = get_stat_maxima()
+            min_cost, max_cost = number_range("Cost", maxima["cost"])
+            min_power, max_power = number_range("Power", maxima["power"])
+            min_hp, max_hp = number_range("HP", maxima["hp"])
 
         with st.expander("Aspects", expanded=True):
             st.caption(
@@ -573,7 +598,7 @@ with card_tab:
                     ("hp", min_hp, max_hp)
                 ]:
                     query = apply_numeric_filter(
-                        query, column, minimum, maximum
+                        query, column, minimum, maximum, maxima[column]
                     )
 
                 query = apply_aspect_filters(
