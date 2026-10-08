@@ -106,7 +106,7 @@ def selected_leader_panel():
     """Selected leader survives gallery filters and pagination in this session."""
     leader = st.session_state.get("swu_selected_leader")
     if not leader:
-        st.info("No leader selected yet. Click a leader image to choose one.")
+        st.info("No leader selected yet. Use Add Leader beneath a leader’s images to choose one.")
         return
 
     st.markdown("**Selected Leader**")
@@ -174,28 +174,21 @@ def show_leader_dialog(leader, printings):
     st.caption("Aspects: " + (", ".join(aspects) if aspects else "Neutral"))
     selected = st.session_state.get("swu_selected_leader") or {}
     already_selected = selected.get("gameplay_id") == group_id
-    button_text = "Update Selected Leader" if already_selected else "Select Leader"
+    button_text = "Update Selected Leader" if already_selected else "Add Leader"
     if st.button(button_text, type="primary", use_container_width=True, key=f"swu_pick_leader_{group_id}"):
         st.session_state["swu_selected_leader"] = leader_selection_record(current)
         st.rerun()
 
 
-def show_leader_gallery_card(leader, printings):
-    """Show image + centered ID; clicking image opens leader selection dialog."""
-    versions = sorted(list(printings or [leader]), key=printing_sort_key)
-    group_id = str(leader.get("gameplay_id") or leader["uuid"])
-    selection_key = f"swu_leader_printing_{group_id}"
-    version_by_id = {str(version["uuid"]): version for version in versions}
-    if st.session_state.get(selection_key) not in version_by_id:
-        preferred = str(leader["uuid"])
-        st.session_state[selection_key] = (
-            preferred if preferred in version_by_id else next(iter(version_by_id))
-        )
-    current = version_by_id[st.session_state[selection_key]]
+def add_leader(leader):
+    """Select a leader directly from the gallery without opening its dialog."""
+    st.session_state["swu_selected_leader"] = leader_selection_record(leader)
 
-    safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(leader["uuid"]))
-    button_key = f"swu_leader_gallery_{safe_id}"
-    image_url = str(current.get("front_image_url") or "").strip()
+
+def _leader_image_button(leader, versions, current, side, safe_id):
+    """Draw one clickable card side; clicking keeps the printing dialog available."""
+    button_key = f"swu_leader_gallery_{safe_id}_{side}"
+    image_url = str(current.get(f"{side}_image_url") or "").strip()
     if image_url.startswith(("https://", "http://")):
         selector = f".st-key-{button_key} button"
         css_url = json.dumps(image_url).replace("<", "\\3c ")
@@ -225,17 +218,55 @@ def show_leader_gallery_card(leader, printings):
             """,
             unsafe_allow_html=True,
         )
+    else:
+        st.caption(f"{side.title()} image unavailable")
 
     if st.button(
-        f"View {leader_display_name(leader)}",
+        f"View {side} side of {leader_display_name(leader)}",
         key=button_key,
         use_container_width=True,
-        help="Click to view the leader and choose a printing",
+        help="Click to view all printings of this leader",
     ):
         show_leader_dialog(leader, versions)
+
+
+def show_leader_gallery_card(leader, printings):
+    """Two clickable card sides plus a direct Add Leader action."""
+    versions = sorted(list(printings or [leader]), key=printing_sort_key)
+    group_id = str(leader.get("gameplay_id") or leader["uuid"])
+    selection_key = f"swu_leader_printing_{group_id}"
+    version_by_id = {str(version["uuid"]): version for version in versions}
+    if st.session_state.get(selection_key) not in version_by_id:
+        preferred = str(leader["uuid"])
+        st.session_state[selection_key] = (
+            preferred if preferred in version_by_id else next(iter(version_by_id))
+        )
+    current = version_by_id[st.session_state[selection_key]]
+
+    safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(leader["uuid"]))
+    front_col, back_col = st.columns(2, gap="small")
+    with front_col:
+        st.caption("Leader")
+        _leader_image_button(leader, versions, current, "front", safe_id)
+    with back_col:
+        st.caption("Deployed")
+        _leader_image_button(leader, versions, current, "back", safe_id)
 
     st.markdown(
         '<p style="text-align:center; font-weight:600; margin:0.25rem 0">'
         + escape(printing_id(current)) + "</p>",
         unsafe_allow_html=True,
+    )
+    already_selected = (
+        (st.session_state.get("swu_selected_leader") or {}).get("gameplay_id")
+        == group_id
+    )
+    st.button(
+        "✓ Added" if already_selected else "Add Leader",
+        key=f"swu_add_leader_{safe_id}",
+        on_click=add_leader,
+        args=(current,),
+        disabled=already_selected,
+        type="secondary" if already_selected else "primary",
+        use_container_width=True,
     )
