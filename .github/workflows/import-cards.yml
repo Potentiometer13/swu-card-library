@@ -2,10 +2,19 @@
 name: Import SWU Cards
 
 on:
+  # Allow manual imports
   workflow_dispatch:
+
+  # Run every day at 10:17 UTC
+  schedule:
+    - cron: '17 10 * * *'
 
 permissions:
   contents: read
+
+concurrency:
+  group: swu-card-import
+  cancel-in-progress: false
 
 jobs:
   import-cards:
