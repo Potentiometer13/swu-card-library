@@ -27,6 +27,10 @@ from swu_bases import (
     build_base_search_results,
     PRIMARY_BASE_ASPECTS,
 )
+from swu_twin_suns import (
+    render_deck_builder, add_card, card_copy_limit, card_identity,
+    deck_entries,
+)
 from swu_leaders import (
     leader_page_controls,
     load_leader_printings,
@@ -679,6 +683,13 @@ def show_card(card):
 
 
 
+def add_twin_suns_card(card):
+    """Add the selected gameplay card to session-only Twin Suns draw deck."""
+    success, message = add_card(st.session_state, card)
+    if not success:
+        st.toast(message)
+
+
 # --------------------------------------------------
 # MAIN APPLICATION
 # --------------------------------------------------
@@ -686,8 +697,8 @@ def show_card(card):
 st.title("Star Wars Unlimited Deck Builder")
 st.caption("Search cards, build decks, track your collection")
 
-leader_tab, base_tab, card_tab = st.tabs(
-    ["1. Leaders", "2. Bases", "3. Cards"],
+leader_tab, base_tab, card_tab, deck_tab = st.tabs(
+    ["1. Leaders", "2. Bases", "3. Cards", "4. Deck Builder"],
     default="3. Cards"
 )
 
@@ -1764,6 +1775,34 @@ with card_tab:
                                 card,
                                 printing_options.get(group_id, [card])
                             )
+                            # The image still opens printings; add directly below it.
+                            versions = printing_options.get(group_id, [card])
+                            chosen_uuid = st.session_state.get(
+                                f"swu_printing_choice_{group_id}"
+                            )
+                            chosen_printing = next(
+                                (v for v in versions if str(v["uuid"]) == str(chosen_uuid)),
+                                card,
+                            )
+                            # Gameplay fields (including corrected aspects and
+                            # rules text) are read from the filtered card row.
+                            deck_card = {**card, **{
+                                k: v for k, v in chosen_printing.items()
+                                if k in ("uuid", "set_code", "collector_number",
+                                         "variant_type", "front_image_url")
+                            }}
+                            deck_count = deck_entries(st.session_state).get(
+                                group_id, {}
+                            ).get("count", 0)
+                            limit = card_copy_limit(deck_card)
+                            can_add = limit is None or deck_count < limit
+                            st.button(
+                                "Add to Deck" if can_add else "✓ In Deck",
+                                key=f"swu_twin_suns_add_{group_id}",
+                                on_click=add_twin_suns_card, args=(deck_card,),
+                                use_container_width=True,
+                                disabled=not can_add,
+                            )
 
                     st.divider()
                     page_controls(total_pages, "bottom")
@@ -1774,3 +1813,11 @@ with card_tab:
                 st.error(
                     f"Card search failed: {error}"
                 )
+
+
+# --------------------------------------------------
+# STAGE 2G — TWIN SUNS DECK BUILDER
+# --------------------------------------------------
+
+with deck_tab:
+    render_deck_builder(st)

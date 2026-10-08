@@ -12,6 +12,10 @@ import re
 import streamlit as st
 
 from swu_grouping import printing_id, printing_sort_key
+from swu_twin_suns import (
+    get_selected_leaders, leaders_can_pair, choose_leader,
+    remove_leader, card_identity,
+)
 
 
 LEADER_VIEW = "swu_grouped_leaders"
@@ -103,26 +107,27 @@ def leader_selection_record(leader):
 
 
 def selected_leader_panel():
-    """Selected leader survives gallery filters and pagination in this session."""
-    leader = st.session_state.get("swu_selected_leader")
-    if not leader:
-        st.info("No leader selected yet. Use Add Leader beneath a leader’s images to choose one.")
+    """Twin Suns: two distinct leader selections with independent removal."""
+    pair = get_selected_leaders(st.session_state)
+    st.markdown(f"**Selected Leaders ({len(pair)}/2)**")
+    if not pair:
+        st.info("Select two different leaders using Add Leader beneath their images.")
         return
-
-    st.markdown("**Selected Leader**")
-    image_col, description_col, action_col = st.columns([1, 3, 1], gap="medium")
-    with image_col:
-        if leader.get("front_image_url"):
-            st.image(leader["front_image_url"], width="stretch")
-    with description_col:
-        st.markdown(f"**{escape(leader_display_name(leader))}**")
-        st.caption(f"{printing_id(leader)} · {leader.get('variant_type') or 'Printing'}")
-        aspects = leader.get("aspects") or []
-        st.write("Aspects: " + (", ".join(aspects) if aspects else "Neutral"))
-    with action_col:
-        if st.button("Remove Leader", key="swu_remove_selected_leader", use_container_width=True):
-            st.session_state.pop("swu_selected_leader", None)
-            st.rerun()
+    for slot, leader in enumerate(pair):
+        image_col, description_col, action_col = st.columns([1, 3, 1], gap="medium")
+        with image_col:
+            if leader.get("front_image_url"):
+                st.image(leader["front_image_url"], width="stretch")
+        with description_col:
+            st.markdown(f"**Leader {slot + 1}: {escape(leader_display_name(leader))}**")
+            st.caption(f"{printing_id(leader)} · {leader.get('variant_type') or 'Printing'}")
+            st.write("Aspects: " + (", ".join(leader.get("aspects") or []) or "Neutral"))
+        with action_col:
+            st.button("Remove Leader", key=f"swu_remove_selected_leader_{slot}",
+                      on_click=remove_leader, args=(st.session_state, slot),
+                      use_container_width=True)
+    if len(pair) == 1:
+        st.caption("Choose one more leader. Heroism and Villainy cannot be combined.")
 
 
 @st.dialog("Leader details", width="large", on_dismiss="rerun")
@@ -172,17 +177,28 @@ def show_leader_dialog(leader, printings):
 
     aspects = current.get("aspects") or []
     st.caption("Aspects: " + (", ".join(aspects) if aspects else "Neutral"))
-    selected = st.session_state.get("swu_selected_leader") or {}
-    already_selected = selected.get("gameplay_id") == group_id
-    button_text = "Update Selected Leader" if already_selected else "Add Leader"
-    if st.button(button_text, type="primary", use_container_width=True, key=f"swu_pick_leader_{group_id}"):
-        st.session_state["swu_selected_leader"] = leader_selection_record(current)
-        st.rerun()
+    pair = get_selected_leaders(st.session_state)
+    already_selected = any(card_identity(item) == group_id for item in pair)
+    allowed, reason = leaders_can_pair(pair, current)
+    # Already-selected gameplay cards may switch to another printing.
+    st.button(
+        "Update Selected Printing" if already_selected else
+        "Add Leader" if allowed else "Unavailable",
+        type="primary", use_container_width=True,
+        key=f"swu_pick_leader_{group_id}",
+        disabled=not (allowed or already_selected),
+        on_click=add_leader, args=(current,),
+    )
+    if reason and not already_selected:
+        st.caption(reason)
 
 
 def add_leader(leader):
-    """Select a leader directly from the gallery without opening its dialog."""
-    st.session_state["swu_selected_leader"] = leader_selection_record(leader)
+    """Append leader 1/2, or update an existing printing; reject illegal pairs."""
+    ok, message = choose_leader(st.session_state, leader_selection_record(leader))
+    if not ok:
+        st.warning(message)
+
 
 
 def _leader_image_button(leader, versions, current, side, safe_id):
@@ -275,16 +291,16 @@ def show_leader_gallery_card(leader, printings):
 
     # No set code / collector number beneath leader gallery results.
     # Printing IDs remain available inside the card details popup.
-    already_selected = (
-        (st.session_state.get("swu_selected_leader") or {}).get("gameplay_id")
-        == group_id
-    )
+    pair = get_selected_leaders(st.session_state)
+    already_selected = any(card_identity(item) == group_id for item in pair)
+    allowed, reason = leaders_can_pair(pair, current)
     st.button(
-        "✓ Added" if already_selected else "Add Leader",
+        "✓ Added" if already_selected else "Add Leader" if allowed else "Unavailable",
         key=f"swu_add_leader_{safe_id}",
-        on_click=add_leader,
-        args=(current,),
-        disabled=already_selected,
+        on_click=add_leader, args=(current,),
+        disabled=already_selected or not allowed,
         type="secondary" if already_selected else "primary",
         use_container_width=True,
     )
+    if not allowed and not already_selected and len(pair) < 2:
+        st.caption(reason)
