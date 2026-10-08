@@ -426,11 +426,10 @@ with card_tab:
                 or code.upper().endswith(("OP", "WP"))
             }
 
-            include_weekly_play = st.checkbox(
-                "Include Weekly Play sets",
-                value=False,
-                key="include_weekly_play",
-                on_change=reset_page
+            
+            # Read checkbox state before displaying the Sets dropdown
+            include_weekly_play = st.session_state.get(
+                "include_weekly_play", False
             )
 
             available_sets = [
@@ -456,6 +455,14 @@ with card_tab:
                 key="selected_sets",
                 on_change=reset_page
             )
+
+            st.checkbox(
+                "Include Weekly Play sets",
+                value=False,
+                key="include_weekly_play",
+                on_change=reset_page
+            )
+
 
             chosen_rarities = st.multiselect(
                 "Rarity",
