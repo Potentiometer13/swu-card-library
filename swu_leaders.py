@@ -190,10 +190,9 @@ def _leader_image_button(leader, versions, current, side, safe_id):
     button_key = f"swu_leader_gallery_{safe_id}_{side}"
     image_url = str(current.get(f"{side}_image_url") or "").strip()
 
-    # Leader front: landscape (7:5), full gallery width.
-    # Deployed back: portrait (5:7), centered at two-thirds of its
-    # previous 71.43% width, i.e. 47.62% of the gallery width.
-    image_width = "100%" if side == "front" else "47.62%"
+    # The surrounding columns use a 49:25 ratio: 49 / (7/5)
+    # equals 25 / (5/7), giving both card faces equal heights.
+    image_width = "100%"
     image_ratio = "7 / 5" if side == "front" else "5 / 7"
 
     if image_url.startswith(("https://", "http://")):
@@ -202,7 +201,7 @@ def _leader_image_button(leader, versions, current, side, safe_id):
         st.markdown(
             f"""
             <style>
-            /* Center the portrait image within its full-width gallery slot. */
+            /* Make each clickable artwork fill its proportioned column. */
             .st-key-{button_key} {{
                 display: flex !important;
                 justify-content: center !important;
@@ -252,7 +251,7 @@ def _leader_image_button(leader, versions, current, side, safe_id):
 
 
 def show_leader_gallery_card(leader, printings):
-    """Clickable landscape front stacked above portrait back, with Add Leader."""
+    """Landscape leader and portrait deployed side at equal heights."""
     versions = sorted(list(printings or [leader]), key=printing_sort_key)
     group_id = str(leader.get("gameplay_id") or leader["uuid"])
     selection_key = f"swu_leader_printing_{group_id}"
@@ -266,21 +265,16 @@ def show_leader_gallery_card(leader, printings):
 
     safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(leader["uuid"]))
 
-    # Put both images in a zero-gap container. No extra labels or whitespace
-    # between the landscape front and the smaller, centered portrait back.
-    with st.container(
-        key=f"swu_leader_image_stack_{safe_id}",
-        gap=None,
-        border=False,
-    ):
+    # With a 7:5 front and a 5:7 back, widths of 49:25 make both
+    # images the same height. Zero gap keeps them tightly adjacent.
+    front_col, back_col = st.columns([49, 25], gap=None)
+    with front_col:
         _leader_image_button(leader, versions, current, "front", safe_id)
+    with back_col:
         _leader_image_button(leader, versions, current, "back", safe_id)
 
-    st.markdown(
-        '<p style="text-align:center; font-weight:600; margin:0.25rem 0">'
-        + escape(printing_id(current)) + "</p>",
-        unsafe_allow_html=True,
-    )
+    # No set code / collector number beneath leader gallery results.
+    # Printing IDs remain available inside the card details popup.
     already_selected = (
         (st.session_state.get("swu_selected_leader") or {}).get("gameplay_id")
         == group_id
