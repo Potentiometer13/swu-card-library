@@ -521,9 +521,9 @@ with leader_tab:
                 leader_page_controls(leader_total_pages, "top")
                 st.divider()
                 leader_printings = load_leader_printings(db, leader_cards)
-                leader_columns = st.columns(4)
+                leader_columns = st.columns(2)
                 for index, leader in enumerate(leader_cards):
-                    with leader_columns[index % 4]:
+                    with leader_columns[index % 2]:
                         group_id = str(
                             leader.get("gameplay_id") or leader["uuid"]
                         )
