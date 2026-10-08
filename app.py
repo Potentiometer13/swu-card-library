@@ -168,10 +168,15 @@ def apply_aspect_filters(query, mode, levels, neutral):
     return query
 
 
+
 def apply_numeric_filter(query, column, minimum, maximum):
-    if minimum is not None:
+
+    # A minimum of 0 means no minimum restriction.
+    # This preserves Events and Upgrades with NULL stats.
+    if minimum is not None and minimum > 0:
         query = query.gte(column, minimum)
 
+    # Only apply maximum when explicitly entered.
     if maximum is not None:
         query = query.lte(column, maximum)
 
@@ -209,6 +214,7 @@ def page_controls(total_pages, location):
         )
 
 
+
 def number_range(label):
     left, right = st.columns(2)
 
@@ -216,7 +222,7 @@ def number_range(label):
         minimum = st.number_input(
             f"{label} min",
             min_value=0,
-            value=None,
+            value=0,
             step=1,
             key=f"{label}_min",
             on_change=reset_page
@@ -233,6 +239,7 @@ def number_range(label):
         )
 
     return minimum, maximum
+
 
 
 def show_card(card):
