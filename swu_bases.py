@@ -626,6 +626,18 @@ def build_base_search_results(all_bases, all_printings, filters_config):
             ),
             key=standard_location_sort,
         )
+
+        # Multiple gameplay IDs can share the same planet (for example,
+        # different Tatooine standard-base cards). Show each LOCATION once;
+        # alternate card printings are still available via the card popup.
+        # standard_location_sort prefers a Homeworlds base when available.
+        distinct_locations = {}
+        for candidate in choices:
+            location_key = re.sub(r"\s+", " ", location_label(candidate)).strip().casefold()
+            if location_key not in distinct_locations:
+                distinct_locations[location_key] = candidate
+        choices = list(distinct_locations.values())
+
         if choices:
             results.append({
                 "kind": "standard",
