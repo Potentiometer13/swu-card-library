@@ -38,6 +38,19 @@ ASPECT_MODES = [
     "Exclude Selected"
 ]
 
+
+# Main booster expansions, including announced preview sets.
+# Extend this list when the next major expansion launches.
+MAIN_EXPANSION_SET_CODES = {
+    "SOR", "SHD", "TWI", "JTL", "LOF", "SEC", "LAW",
+    "ASH", "HMW", "IC27",
+}
+
+
+def is_niche_set(set_code):
+    """Other sets: Weekly Play, promos, convention, Judge, starters, etc."""
+    return (set_code or "").strip().upper() not in MAIN_EXPANSION_SET_CODES
+
 if "page" not in st.session_state:
     st.session_state.page = 1
 
@@ -78,7 +91,7 @@ def clear_leader_filters():
         "swu_leader_traits": [],
         "swu_leader_keywords": [],
         "swu_leader_sets": [],
-        "swu_leader_include_weekly": False,
+        "swu_leader_include_niche": False,
         "swu_leader_rarities": [],
     }
 
@@ -535,11 +548,6 @@ with leader_tab:
         leader_set_names = {
             item["code"]: item["name"] for item in leader_sets
         }
-        weekly_leader_codes = {
-            code for code, set_name in leader_set_names.items()
-            if ("weekly" in set_name.lower() and "play" in set_name.lower())
-            or code.upper().endswith(("OP", "WP"))
-        }
     except Exception as error:
         st.error(f"Could not load leader filters: {error}")
         st.stop()
@@ -632,12 +640,12 @@ with leader_tab:
             )
 
         with st.expander("Sets & Rarity"):
-            include_leader_weekly = st.session_state.get(
-                "swu_leader_include_weekly", False
+            include_leader_niche = st.session_state.get(
+                "swu_leader_include_niche", False
             )
             leader_available_sets = [
                 code for code in leader_set_names
-                if include_leader_weekly or code not in weekly_leader_codes
+                if include_leader_niche or not is_niche_set(code)
             ]
             if "swu_leader_sets" in st.session_state:
                 st.session_state["swu_leader_sets"] = [
@@ -652,10 +660,15 @@ with leader_tab:
                 on_change=reset_leader_page,
             )
             st.checkbox(
-                "Include Weekly Play sets",
+                "Include niche / promotional sets",
                 value=False,
-                key="swu_leader_include_weekly",
+                key="swu_leader_include_niche",
                 on_change=reset_leader_page,
+                help=(
+                    "Show non-expansion sets in the Sets dropdown, "
+                    "including C24, Weekly Play, Judge, and other promos. "
+                    "Does not exclude cards when no Sets are chosen."
+                ),
             )
             chosen_leader_rarities = st.multiselect(
                 "Rarity",
@@ -1151,27 +1164,16 @@ with card_tab:
                 for item in sets
             }
 
-            weekly_play_codes = {
-                code
-                for code, set_name in set_names.items()
-                if (
-                    "weekly" in set_name.lower()
-                    and "play" in set_name.lower()
-                )
-                or code.upper().endswith(("OP", "WP"))
-            }
-
-            
-            # Read checkbox state before displaying the Sets dropdown
-            include_weekly_play = st.session_state.get(
-                "include_weekly_play", False
+            # Keep the Sets dropdown focused on the main expansions.
+            # Enable the checkbox to show niche/promotional sets as well.
+            include_niche_sets = st.session_state.get(
+                "include_niche_sets", False
             )
 
             available_sets = [
                 code
                 for code in set_names
-                if include_weekly_play
-                or code not in weekly_play_codes
+                if include_niche_sets or not is_niche_set(code)
             ]
 
             if "selected_sets" in st.session_state:
@@ -1192,10 +1194,15 @@ with card_tab:
             )
 
             st.checkbox(
-                "Include Weekly Play sets",
+                "Include niche / promotional sets",
                 value=False,
-                key="include_weekly_play",
-                on_change=reset_page
+                key="include_niche_sets",
+                on_change=reset_page,
+                help=(
+                    "Show non-expansion sets in the Sets dropdown, "
+                    "including C24, Weekly Play, Judge, and other promos. "
+                    "Does not exclude cards when no Sets are chosen."
+                ),
             )
 
 
