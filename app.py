@@ -22,6 +22,7 @@ from swu_bases import (
     leader_primary_aspects,
     matches_base_filters,
     first_matching_printing,
+    build_base_search_results,
     PRIMARY_BASE_ASPECTS,
 )
 from swu_leaders import (
@@ -1071,98 +1072,66 @@ with base_tab:
                     "sets": chosen_base_sets,
                     "rarities": chosen_base_rarities,
                 }
-                standard = {aspect: [] for aspect in PRIMARY_BASE_ASPECTS}
-                neutral = []
-                special = []
-                for base in all_bases:
-                    category = classify_base(base)
-                    if category == "standard":
-                        aspect = next(iter(base_aspect_names(base)))
-                        standard[aspect].append(base)
-                    elif category == "neutral":
-                        neutral.append(base)
-                    else:
-                        special.append(base)
-
-                # 1. Four ordinary 30-HP aspect bases, one color selection each.
-                st.markdown("#### Standard bases")
-                st.caption("Choose a color and location. Homeworlds planets appear first; "
-                           "location is a real base-card choice, not a cosmetic label.")
-                icons = {"Vigilance": "🔵", "Command": "🟢",
-                         "Aggression": "🔴", "Cunning": "🟡"}
-                for aspect_left, aspect_right in (
-                    ("Vigilance", "Command"), ("Aggression", "Cunning")
-                ):
-                    cols = st.columns(2, gap="medium")
-                    for aspect, col in ((aspect_left, cols[0]), (aspect_right, cols[1])):
-                        with col:
-                            st.markdown(f"**{icons[aspect]} {aspect}**")
-                            choices = sorted(
-                                [matched for b in standard[aspect]
-                                 if (matched := first_matching_printing(
-                                     b, all_printings, filters_config)) is not None],
-                                key=standard_location_sort)
-                            if not choices:
-                                st.caption("Excluded by filters (or no matching location).")
-                                continue
-                            by_id = {str(b["gameplay_id"]): b for b in choices}
-                            chosen = st.selectbox(
-                                "Location", list(by_id),
-                                format_func=lambda gid: location_label(by_id[gid]),
-                                key=f"swu_base_location_{aspect.lower()}")
-                            chosen_base = by_id[chosen]
-                            show_base_gallery_card(
-                                chosen_base, all_printings.get(chosen, [chosen_base]))
-
-                # 2. Neutral / colorless basic bases, always represented separately.
-                st.divider()
-                st.markdown("#### Colorless bases")
-                st.caption("These have no aspect icon. Their section remains visible "
-                           "even when Exclude Selected would otherwise omit neutral cards.")
-                # The explicit neutral section overrides aspect-mode filtering only.
-                neutral_filters = dict(filters_config)
-                neutral_filters["mode"] = "All Selected"
-                neutral_filters["selected_aspects"] = set()
-                neutral_choices = [
-                    matched for b in neutral
-                    if (matched := first_matching_printing(
-                        b, all_printings, neutral_filters)) is not None
-                ]
-                if neutral_choices:
-                    neutral_columns = st.columns(min(2, len(neutral_choices)))
-                    for index, base in enumerate(neutral_choices):
-                        with neutral_columns[index % len(neutral_columns)]:
-                            group_id = str(base["gameplay_id"])
-                            show_base_gallery_card(base, all_printings.get(group_id, [base]))
-                else:
-                    st.caption("No matching colorless base in the imported card catalog.")
-
-                # 3. All ability-bearing bases (and any unusual special bases).
-                st.divider()
-                st.markdown("#### Bases with abilities")
-                matching_special = [
-                    matched for base in special
-                    if (matched := first_matching_printing(
-                        base, all_printings, filters_config)) is not None
-                ]
-                special_total = len(matching_special)
-                st.caption(f"{special_total:,} matching special bases")
-                total_pages = max(1, math.ceil(special_total / base_page_size))
+                # One unified search list: standard colors first, then neutral,
+                # then bases with rules text. All participate in pagination.
+                ordered_bases = build_base_search_results(
+                    all_bases, all_printings, filters_config
+                )
+                total_bases = len(ordered_bases)
+                total_pages = max(1, math.ceil(total_bases / base_page_size))
                 if st.session_state["swu_base_page"] > total_pages:
                     st.session_state["swu_base_page"] = total_pages
-                if matching_special:
+
+                st.metric("Matching bases", total_bases)
+                if total_bases:
+                    current_page = st.session_state["swu_base_page"]
+                    start = (current_page - 1) * base_page_size
+                    visible = ordered_bases[start:start + base_page_size]
+                    end = start + len(visible)
+                    st.caption(
+                        f"Showing {start + 1:,}–{end:,} of {total_bases:,} bases. "
+                        "Standard colors first, then colorless, then ability bases."
+                    )
                     base_page_controls(total_pages, "top")
-                    start = (st.session_state["swu_base_page"] - 1) * base_page_size
-                    page = matching_special[start:start + base_page_size]
-                    cols = st.columns(bases_per_row, gap="small")
-                    for index, base in enumerate(page):
-                        with cols[index % bases_per_row]:
-                            group_id = str(base["gameplay_id"])
+                    st.divider()
+
+                    icons = {
+                        "Vigilance": "🔵", "Command": "🟢",
+                        "Aggression": "🔴", "Cunning": "🟡",
+                    }
+                    columns = st.columns(bases_per_row, gap="small")
+                    for index, result in enumerate(visible):
+                        with columns[index % bases_per_row]:
+                            if result["kind"] == "standard":
+                                aspect = result["aspect"]
+                                choices = result["choices"]
+                                by_id = {
+                                    str(base.get("gameplay_id") or base["uuid"]): base
+                                    for base in choices
+                                }
+                                st.markdown(f"**{icons[aspect]} {aspect}**")
+                                selection_key = f"swu_base_location_{aspect.lower()}"
+                                selected_id = st.selectbox(
+                                    "Location",
+                                    options=list(by_id),
+                                    format_func=lambda gid, choices_by_id=by_id:
+                                        location_label(choices_by_id[gid]),
+                                    key=selection_key,
+                                )
+                                base = by_id[selected_id]
+                            else:
+                                base = result["base"]
+
+                            group_id = str(base.get("gameplay_id") or base["uuid"])
                             show_base_gallery_card(
-                                base, all_printings.get(group_id, [base]))
+                                base,
+                                all_printings.get(group_id, [base]),
+                            )
+
+                    st.divider()
                     base_page_controls(total_pages, "bottom")
                 else:
-                    st.info("No matching bases with abilities.")
+                    st.info("No matching bases found. Adjust the filters to see more.")
             except Exception as error:
                 st.error(f"Base search failed: {error}")
 

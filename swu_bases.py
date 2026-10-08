@@ -411,3 +411,69 @@ def first_matching_printing(base, grouped, filters):
         if matches_base_filters(printing, filters):
             return printing
     return None
+
+
+# --------------------------------------------------
+# Unified, ordered Base search results
+# --------------------------------------------------
+
+def build_base_search_results(all_bases, all_printings, filters_config):
+    """One searchable result per standard color, then colorless, then ability bases.
+
+    Each standard-color result retains its location choices, so the user selects
+    a *real* printed base card without flooding results with all locations.
+    All results participate in the same pagination, and no card group is shown
+    twice in this list.
+    """
+    standard = {aspect: [] for aspect in PRIMARY_BASE_ASPECTS}
+    neutral = []
+    special = []
+
+    for base in all_bases:
+        category = classify_base(base)
+        if category == "standard":
+            aspect = next(iter(base_aspect_names(base)))
+            standard[aspect].append(base)
+        elif category == "neutral":
+            neutral.append(base)
+        else:
+            special.append(base)
+
+    results = []
+
+    # First: up to four colored standard bases, one choice per color.
+    for aspect in PRIMARY_BASE_ASPECTS:
+        choices = sorted(
+            (
+                matched
+                for base in standard[aspect]
+                if (matched := first_matching_printing(
+                    base, all_printings, filters_config
+                )) is not None
+            ),
+            key=standard_location_sort,
+        )
+        if choices:
+            results.append({
+                "kind": "standard",
+                "aspect": aspect,
+                "choices": choices,
+            })
+
+    # Second: neutral bases retain the prior special-case behavior: their
+    # category is available even in Exclude Selected with no colors selected.
+    neutral_filters = dict(filters_config)
+    neutral_filters["mode"] = "All Selected"
+    neutral_filters["selected_aspects"] = set()
+    for base in neutral:
+        matching = first_matching_printing(base, all_printings, neutral_filters)
+        if matching is not None:
+            results.append({"kind": "neutral", "base": matching})
+
+    # Last: every other base (ability-bearing or unusually configured).
+    for base in special:
+        matching = first_matching_printing(base, all_printings, filters_config)
+        if matching is not None:
+            results.append({"kind": "special", "base": matching})
+
+    return results
