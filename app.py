@@ -609,17 +609,14 @@ with card_tab:
                         f"%{ability.strip()}%"
                     )
                     
+                
                 if exclude_ability.strip():
-                    excluded = (
-                        exclude_ability.strip()
-                        .replace("\\", "\\\\")
-                        .replace('"', '\\"')
+                    query = query.filter(
+                        "ability_search_text",
+                        "not.ilike",
+                        f"%{exclude_ability.strip()}%"
                     )
-
-                    query = query.or_(
-                        'rules_text.is.null,'
-                        f'rules_text.not.ilike."*{excluded}*"'
-                    )
+ 
 
 
                 query = query.in_("card_type", card_types)
