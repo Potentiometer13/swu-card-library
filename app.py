@@ -7,6 +7,23 @@ from swu_grouping import (
     load_printing_options,
     show_grouped_card,
 )
+from swu_bases import (
+    base_page_controls,
+    load_base_printings,
+    reset_base_page,
+    selected_base_panel,
+    show_base_gallery_card,
+    load_complete_base_library,
+    classify_base,
+    base_aspect_names,
+    base_planet,
+    location_label,
+    standard_location_sort,
+    leader_primary_aspects,
+    matches_base_filters,
+    first_matching_printing,
+    PRIMARY_BASE_ASPECTS,
+)
 from swu_leaders import (
     leader_page_controls,
     load_leader_printings,
@@ -219,6 +236,126 @@ def leader_aspect_grid():
                     key=f"swu_leader_aspect_double_{slug}",
                     on_click=toggle_leader_double_aspect, args=(aspect,),
                     use_container_width=True, type="secondary"
+                )
+    return levels
+
+
+# Bases have one aspect icon, so this grid uses only the four main colors.
+# Base filter state is intentionally independent of Leaders and Cards.
+BASE_ASPECTS = ["Vigilance", "Command", "Aggression", "Cunning"]
+
+
+def sync_base_filters_from_leader(force=False):
+    """Keep hand-edited filters until the chosen leader actually changes."""
+    current_colors = leader_primary_aspects(st.session_state)
+    leader = st.session_state.get("swu_selected_leader") or {}
+    multi = st.session_state.get("swu_selected_leaders") or []
+    leader_ids = [str(leader.get("gameplay_id") or leader.get("uuid") or "")]
+    leader_ids += sorted(str(x.get("gameplay_id") or x.get("uuid") or "")
+                         for x in multi if isinstance(x, dict))
+    fingerprint = tuple(leader_ids)
+    if force or st.session_state.get("swu_base_synced_leader") != fingerprint:
+        st.session_state["swu_base_synced_leader"] = fingerprint
+        for aspect in BASE_ASPECTS:
+            st.session_state[f"swu_base_aspect_{aspect.lower()}"] = (aspect in current_colors)
+        st.session_state["swu_base_aspect_mode"] = "Exclude Selected"
+        reset_base_page()
+
+
+def toggle_base_aspect(aspect):
+    key = f"swu_base_aspect_{aspect.lower()}"
+    st.session_state[key] = not st.session_state.get(key, False)
+    reset_base_page()
+
+
+@st.cache_data(ttl=3600)
+def get_base_hp_maximum():
+    result = (
+        get_database().table("card_printings")
+        .select("hp")
+        .eq("card_type", "Base")
+        .order("hp", desc=True, nullsfirst=False)
+        .limit(1)
+        .execute()
+    )
+    hp = result.data[0]["hp"] if result.data else 0
+    return max(0, int(hp or 0))
+
+
+def clear_base_filters():
+    """Restore base search defaults but keep the selected base and layout."""
+    defaults = {
+        "swu_base_search": "",
+        "swu_base_ability_contains": "",
+        "swu_base_ability_excludes": "",
+        "swu_base_aspect_mode": "Exclude Selected",
+        "swu_base_traits": [],
+        "swu_base_keywords": [],
+        "swu_base_sets": [],
+        "swu_base_include_niche": False,
+        "swu_base_rarities": [],
+        "swu_base_hp_min": 0,
+        "swu_base_hp_max": get_base_hp_maximum(),
+    }
+    for key, default in defaults.items():
+        st.session_state[key] = default
+    sync_base_filters_from_leader(force=True)
+    reset_base_page()
+
+
+def base_aspect_grid():
+    """Four primary SWU colors; selected buttons gain the charcoal border."""
+    icons = {
+        "Vigilance": "🔵", "Command": "🟢",
+        "Aggression": "🔴", "Cunning": "🟡",
+    }
+    palette = {
+        "Vigilance": ("#307FC1", "#FFFFFF"),
+        "Command": ("#258852", "#FFFFFF"),
+        "Aggression": ("#C23E48", "#FFFFFF"),
+        "Cunning": ("#F0C746", "#202124"),
+    }
+    levels = {aspect: 0 for aspect in ASPECTS}
+    css = "<style>"
+    for aspect in BASE_ASPECTS:
+        active = st.session_state.get(f"swu_base_aspect_{aspect.lower()}", False)
+        levels[aspect] = 1 if active else 0
+        color, foreground = palette[aspect]
+        if not active:
+            color, foreground = "rgba(107,114,128,0.14)", "inherit"
+        border = "2px solid #374151" if active else "2px solid transparent"
+        shadow = "0 0 0 2px rgba(156,163,175,0.45)" if active else "none"
+        selector = f".st-key-swu_base_aspect_btn_{aspect.lower()} button"
+        css += f"""
+        {selector}, {selector}:hover, {selector}:focus-visible {{
+            min-height: 48px !important;
+            border-radius: 9px !important;
+            background-color: {color} !important;
+            color: {foreground} !important;
+            border: {border} !important;
+            box-shadow: {shadow} !important;
+            filter: none !important;
+            opacity: 1 !important;
+            padding: 4px !important;
+        }}
+        {selector} p, {selector}:hover p, {selector}:focus-visible p {{
+            color: {foreground} !important;
+            font-size: .75rem !important;
+            font-weight: 600 !important;
+        }}
+        """
+    st.markdown(css + "</style>", unsafe_allow_html=True)
+    for first, second in (("Vigilance", "Command"), ("Aggression", "Cunning")):
+        left, right = st.columns(2, gap="small")
+        for aspect, column in ((first, left), (second, right)):
+            with column:
+                st.button(
+                    f"{icons[aspect]} {aspect}",
+                    key=f"swu_base_aspect_btn_{aspect.lower()}",
+                    on_click=toggle_base_aspect,
+                    args=(aspect,),
+                    use_container_width=True,
+                    type="secondary",
                 )
     return levels
 
@@ -814,8 +951,220 @@ with leader_tab:
             st.error(f"Leader search failed: {error}")
 
 with base_tab:
-    st.header("Bases")
-    st.info("Base selection will be added in Stage 2F.")
+    st.header("Base Library")
+
+    # The base defaults follow the current Leader, but ONLY when it changes.
+    # This must run before Streamlit creates any Base filter widgets.
+    sync_base_filters_from_leader()
+    selected_base_panel()
+    st.divider()
+
+    try:
+        all_sets, available_base_traits, available_base_keywords = get_filter_options()
+        base_set_names = {item["code"]: item["name"] for item in all_sets}
+    except Exception as error:
+        st.error(f"Could not load base filter options: {error}")
+        st.stop()
+
+    base_filters, base_results = st.columns([1, 3], gap="large")
+
+    with base_filters:
+        st.subheader("Filters")
+        st.button("Clear Filters", key="swu_clear_base_filters",
+                  on_click=clear_base_filters, use_container_width=True)
+        base_search = st.text_input(
+            "Base name / subtitle", key="swu_base_search", on_change=reset_base_page)
+        base_ability_contains = st.text_input(
+            "Ability text contains", key="swu_base_ability_contains", on_change=reset_base_page)
+        base_ability_excludes = st.text_input(
+            "Exclude ability text", key="swu_base_ability_excludes", on_change=reset_base_page)
+
+        st.markdown("**Base HP**")
+        max_base_hp = get_base_hp_maximum()
+        hp_col1, hp_col2 = st.columns(2)
+        with hp_col1:
+            base_min_hp = st.number_input(
+                "HP min", min_value=0, max_value=max_base_hp,
+                value=0, step=1, key="swu_base_hp_min", on_change=reset_base_page)
+        with hp_col2:
+            base_max_hp = st.number_input(
+                "HP max", min_value=0, max_value=max_base_hp,
+                value=max_base_hp, step=1, key="swu_base_hp_max", on_change=reset_base_page)
+
+        with st.expander("Aspects", expanded=True):
+            base_aspect_mode = st.selectbox(
+                "Aspect filter mode",
+                ["Exclude Selected", "All Selected", "Deck Compatibility", "Exact"],
+                index=0, key="swu_base_aspect_mode", on_change=reset_base_page)
+            base_levels = base_aspect_grid()
+            st.caption("Defaults exclude your leader's primary aspect colors. "
+                       "Heroism and Villainy are ignored. Change these buttons anytime.")
+
+        with st.expander("Traits & Keywords"):
+            chosen_base_traits = st.multiselect(
+                "Traits (match any selected)", available_base_traits,
+                key="swu_base_traits", on_change=reset_base_page)
+            chosen_base_keywords = st.multiselect(
+                "Keywords (match any selected)", available_base_keywords,
+                key="swu_base_keywords", on_change=reset_base_page)
+
+        with st.expander("Sets & Rarity"):
+            include_base_niche = st.session_state.get("swu_base_include_niche", False)
+            available_base_sets = [
+                code for code in base_set_names
+                if include_base_niche or not is_niche_set(code)
+            ]
+            if "swu_base_sets" in st.session_state:
+                st.session_state["swu_base_sets"] = [
+                    code for code in st.session_state["swu_base_sets"]
+                    if code in available_base_sets
+                ]
+            chosen_base_sets = st.multiselect(
+                "Sets", available_base_sets,
+                format_func=lambda code: f"{code} — {base_set_names[code]}",
+                key="swu_base_sets", on_change=reset_base_page)
+            st.checkbox(
+                "Include niche / promotional sets", value=False,
+                key="swu_base_include_niche", on_change=reset_base_page,
+                help="Show specialty sets in this dropdown; no Set filter means all printings.")
+            chosen_base_rarities = st.multiselect(
+                "Rarity", ["Common", "Uncommon", "Rare", "Legendary", "Special"],
+                key="swu_base_rarities", on_change=reset_base_page)
+
+    with base_results:
+        @st.cache_data(ttl=1800, show_spinner="Loading the base library...")
+        def cached_base_library():
+            return load_complete_base_library(get_database())
+
+        st.subheader("Choose a Base")
+        page_col, row_col = st.columns(2, gap="medium")
+        with page_col:
+            base_page_size = st.selectbox(
+                "Bases per page", [100, 40, 20], index=0,
+                key="swu_base_page_size", on_change=reset_base_page)
+        with row_col:
+            bases_per_row = st.selectbox(
+                "Bases per row", [1, 2, 3, 4], index=1,
+                key="swu_bases_per_row")
+
+        if "swu_base_page" not in st.session_state:
+            st.session_state["swu_base_page"] = 1
+
+        if base_min_hp > base_max_hp:
+            st.warning("Minimum base HP cannot exceed maximum base HP.")
+        else:
+            try:
+                all_bases, all_printings = cached_base_library()
+                filters_config = {
+                    "name": base_search.strip(),
+                    "ability": base_ability_contains.strip(),
+                    "exclude_ability": base_ability_excludes.strip(),
+                    "min_hp": base_min_hp, "max_hp": base_max_hp,
+                    "absolute_max_hp": max_base_hp,
+                    "mode": base_aspect_mode,
+                    "selected_aspects": {
+                        aspect for aspect in PRIMARY_BASE_ASPECTS
+                        if base_levels.get(aspect, 0) > 0
+                    },
+                    "traits": chosen_base_traits,
+                    "keywords": chosen_base_keywords,
+                    "sets": chosen_base_sets,
+                    "rarities": chosen_base_rarities,
+                }
+                standard = {aspect: [] for aspect in PRIMARY_BASE_ASPECTS}
+                neutral = []
+                special = []
+                for base in all_bases:
+                    category = classify_base(base)
+                    if category == "standard":
+                        aspect = next(iter(base_aspect_names(base)))
+                        standard[aspect].append(base)
+                    elif category == "neutral":
+                        neutral.append(base)
+                    else:
+                        special.append(base)
+
+                # 1. Four ordinary 30-HP aspect bases, one color selection each.
+                st.markdown("#### Standard bases")
+                st.caption("Choose a color and location. Homeworlds planets appear first; "
+                           "location is a real base-card choice, not a cosmetic label.")
+                icons = {"Vigilance": "🔵", "Command": "🟢",
+                         "Aggression": "🔴", "Cunning": "🟡"}
+                for aspect_left, aspect_right in (
+                    ("Vigilance", "Command"), ("Aggression", "Cunning")
+                ):
+                    cols = st.columns(2, gap="medium")
+                    for aspect, col in ((aspect_left, cols[0]), (aspect_right, cols[1])):
+                        with col:
+                            st.markdown(f"**{icons[aspect]} {aspect}**")
+                            choices = sorted(
+                                [matched for b in standard[aspect]
+                                 if (matched := first_matching_printing(
+                                     b, all_printings, filters_config)) is not None],
+                                key=standard_location_sort)
+                            if not choices:
+                                st.caption("Excluded by filters (or no matching location).")
+                                continue
+                            by_id = {str(b["gameplay_id"]): b for b in choices}
+                            chosen = st.selectbox(
+                                "Location", list(by_id),
+                                format_func=lambda gid: location_label(by_id[gid]),
+                                key=f"swu_base_location_{aspect.lower()}")
+                            chosen_base = by_id[chosen]
+                            show_base_gallery_card(
+                                chosen_base, all_printings.get(chosen, [chosen_base]))
+
+                # 2. Neutral / colorless basic bases, always represented separately.
+                st.divider()
+                st.markdown("#### Colorless bases")
+                st.caption("These have no aspect icon. Their section remains visible "
+                           "even when Exclude Selected would otherwise omit neutral cards.")
+                # The explicit neutral section overrides aspect-mode filtering only.
+                neutral_filters = dict(filters_config)
+                neutral_filters["mode"] = "All Selected"
+                neutral_filters["selected_aspects"] = set()
+                neutral_choices = [
+                    matched for b in neutral
+                    if (matched := first_matching_printing(
+                        b, all_printings, neutral_filters)) is not None
+                ]
+                if neutral_choices:
+                    neutral_columns = st.columns(min(2, len(neutral_choices)))
+                    for index, base in enumerate(neutral_choices):
+                        with neutral_columns[index % len(neutral_columns)]:
+                            group_id = str(base["gameplay_id"])
+                            show_base_gallery_card(base, all_printings.get(group_id, [base]))
+                else:
+                    st.caption("No matching colorless base in the imported card catalog.")
+
+                # 3. All ability-bearing bases (and any unusual special bases).
+                st.divider()
+                st.markdown("#### Bases with abilities")
+                matching_special = [
+                    matched for base in special
+                    if (matched := first_matching_printing(
+                        base, all_printings, filters_config)) is not None
+                ]
+                special_total = len(matching_special)
+                st.caption(f"{special_total:,} matching special bases")
+                total_pages = max(1, math.ceil(special_total / base_page_size))
+                if st.session_state["swu_base_page"] > total_pages:
+                    st.session_state["swu_base_page"] = total_pages
+                if matching_special:
+                    base_page_controls(total_pages, "top")
+                    start = (st.session_state["swu_base_page"] - 1) * base_page_size
+                    page = matching_special[start:start + base_page_size]
+                    cols = st.columns(bases_per_row, gap="small")
+                    for index, base in enumerate(page):
+                        with cols[index % bases_per_row]:
+                            group_id = str(base["gameplay_id"])
+                            show_base_gallery_card(
+                                base, all_printings.get(group_id, [base]))
+                    base_page_controls(total_pages, "bottom")
+                else:
+                    st.info("No matching bases with abilities.")
+            except Exception as error:
+                st.error(f"Base search failed: {error}")
 
 
 # --------------------------------------------------
