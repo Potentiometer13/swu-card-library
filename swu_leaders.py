@@ -189,18 +189,35 @@ def _leader_image_button(leader, versions, current, side, safe_id):
     """Draw one clickable card side; clicking keeps the printing dialog available."""
     button_key = f"swu_leader_gallery_{safe_id}_{side}"
     image_url = str(current.get(f"{side}_image_url") or "").strip()
+
+    # A SWU leader side is landscape (7:5), while the deployed side is
+    # portrait (5:7).  Giving the deployed side 5/7 of the front's width
+    # keeps both images at the same physical card scale after rotation.
+    image_width = "100%" if side == "front" else "71.43%"
+    image_ratio = "7 / 5" if side == "front" else "5 / 7"
+
     if image_url.startswith(("https://", "http://")):
         selector = f".st-key-{button_key} button"
         css_url = json.dumps(image_url).replace("<", "\\3c ")
         st.markdown(
             f"""
             <style>
-            {selector}, {selector}:hover, {selector}:focus-visible {{
+            /* Center the portrait image within its full-width gallery slot. */
+            .st-key-{button_key} {{
+                display: flex !important;
+                justify-content: center !important;
                 width: 100% !important;
+            }}
+            {selector}, {selector}:hover, {selector}:focus-visible {{
+                width: {image_width} !important;
+                flex: 0 0 {image_width} !important;
+                max-width: {image_width} !important;
                 height: auto !important;
                 min-height: 0 !important;
-                aspect-ratio: 5 / 7 !important;
+                aspect-ratio: {image_ratio} !important;
                 display: block !important;
+                margin-left: auto !important;
+                margin-right: auto !important;
                 padding: 0 !important;
                 border: none !important;
                 border-radius: 8px !important;
@@ -213,7 +230,11 @@ def _leader_image_button(leader, versions, current, side, safe_id):
                 cursor: pointer !important;
             }}
             {selector}:focus-visible {{ outline: 3px solid #6B7280 !important; }}
-            {selector} p {{ opacity: 0 !important; }}
+            {selector} p {{
+                opacity: 0 !important;
+                font-size: 0 !important;
+                line-height: 0 !important;
+            }}
             </style>
             """,
             unsafe_allow_html=True,
@@ -231,7 +252,7 @@ def _leader_image_button(leader, versions, current, side, safe_id):
 
 
 def show_leader_gallery_card(leader, printings):
-    """Two clickable card sides plus a direct Add Leader action."""
+    """Clickable landscape front stacked above portrait back, with Add Leader."""
     versions = sorted(list(printings or [leader]), key=printing_sort_key)
     group_id = str(leader.get("gameplay_id") or leader["uuid"])
     selection_key = f"swu_leader_printing_{group_id}"
@@ -244,13 +265,12 @@ def show_leader_gallery_card(leader, printings):
     current = version_by_id[st.session_state[selection_key]]
 
     safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(leader["uuid"]))
-    front_col, back_col = st.columns(2, gap="small")
-    with front_col:
-        st.caption("Leader")
-        _leader_image_button(leader, versions, current, "front", safe_id)
-    with back_col:
-        st.caption("Deployed")
-        _leader_image_button(leader, versions, current, "back", safe_id)
+
+    # Stack the full-width horizontal front above the centered vertical back.
+    st.caption("Leader")
+    _leader_image_button(leader, versions, current, "front", safe_id)
+    st.caption("Deployed")
+    _leader_image_button(leader, versions, current, "back", safe_id)
 
     st.markdown(
         '<p style="text-align:center; font-weight:600; margin:0.25rem 0">'
