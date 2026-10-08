@@ -198,6 +198,9 @@ def show_base_gallery_card(
     image = str(current.get("front_image_url") or "").strip()
     safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(base["uuid"]))
     button_key = f"swu_base_gallery_{safe_id}"
+    # An invisible selectbox matches the exact height and spacing of a real
+    # location dropdown; a plain 40px HTML spacer does not.
+    placeholder_key = f"swu_base_location_placeholder_{safe_id}"
 
     if image.startswith(("https://", "http://")):
         selector = f".st-key-{button_key} button"
@@ -224,12 +227,21 @@ def show_base_gallery_card(
             }}
             {selector}:focus-visible {{ outline: 3px solid #6B7280 !important; }}
             {selector} p {{ opacity: 0 !important; }}
+            .st-key-{placeholder_key} {{
+                visibility: hidden !important;
+                pointer-events: none !important;
+            }}
             </style>
             """,
             unsafe_allow_html=True,
         )
     else:
         st.caption("Image unavailable")
+        # Still conceal the sizing placeholder if the image URL is unavailable.
+        st.markdown(
+            f"<style>.st-key-{placeholder_key} {{visibility:hidden !important;}}</style>",
+            unsafe_allow_html=True,
+        )
 
     if st.button(
         f"View printings of {base_display_name(base)}",
@@ -252,11 +264,15 @@ def show_base_gallery_card(
             label_visibility="collapsed",
         )
     elif reserve_location_space:
-        # Match the height of the location selector in mixed rows, so
-        # all Add Base buttons line up without showing an empty dropdown.
-        st.markdown(
-            '<div style="height: 40px" aria-hidden="true"></div>',
-            unsafe_allow_html=True,
+        # A disabled, invisible selectbox reserves EXACTLY the same widget
+        # height and vertical margins as the functional location dropdown.
+        # This keeps Add Base buttons aligned across mixed rows.
+        st.selectbox(
+            "Base location",
+            options=[""],
+            key=placeholder_key,
+            label_visibility="collapsed",
+            disabled=True,
         )
 
     already_selected = (
