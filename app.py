@@ -407,6 +407,7 @@ with card_tab:
             )
 
         
+
 with st.expander("Sets & Rarity"):
 
     set_names = {
@@ -470,6 +471,7 @@ with st.expander("Sets & Rarity"):
         ],
         on_change=reset_page
     )
+
 
 
     # --------------------------------------------------
