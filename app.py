@@ -371,6 +371,14 @@ with card_tab:
             key="card_ability",
             on_change=reset_page
         )
+        
+        exclude_ability = st.text_input(
+            "Exclude ability text",
+            key="card_ability_exclude",
+            placeholder="Cards containing this text will be excluded",
+            on_change=reset_page
+        )
+
 
         with st.expander("Card Type & Stats", expanded=True):
             card_types = st.multiselect(
@@ -600,6 +608,19 @@ with card_tab:
                         "rules_text",
                         f"%{ability.strip()}%"
                     )
+                    
+                if exclude_ability.strip():
+                    excluded = (
+                        exclude_ability.strip()
+                        .replace("\\", "\\\\")
+                        .replace('"', '\\"')
+                    )
+
+                    query = query.or_(
+                        'rules_text.is.null,'
+                        f'rules_text.not.ilike."*{excluded}*"'
+                    )
+
 
                 query = query.in_("card_type", card_types)
 
