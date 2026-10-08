@@ -190,10 +190,10 @@ def _leader_image_button(leader, versions, current, side, safe_id):
     button_key = f"swu_leader_gallery_{safe_id}_{side}"
     image_url = str(current.get(f"{side}_image_url") or "").strip()
 
-    # A SWU leader side is landscape (7:5), while the deployed side is
-    # portrait (5:7).  Giving the deployed side 5/7 of the front's width
-    # keeps both images at the same physical card scale after rotation.
-    image_width = "100%" if side == "front" else "71.43%"
+    # Leader front: landscape (7:5), full gallery width.
+    # Deployed back: portrait (5:7), centered at two-thirds of its
+    # previous 71.43% width, i.e. 47.62% of the gallery width.
+    image_width = "100%" if side == "front" else "47.62%"
     image_ratio = "7 / 5" if side == "front" else "5 / 7"
 
     if image_url.startswith(("https://", "http://")):
@@ -266,11 +266,15 @@ def show_leader_gallery_card(leader, printings):
 
     safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(leader["uuid"]))
 
-    # Stack the full-width horizontal front above the centered vertical back.
-    st.caption("Leader")
-    _leader_image_button(leader, versions, current, "front", safe_id)
-    st.caption("Deployed")
-    _leader_image_button(leader, versions, current, "back", safe_id)
+    # Put both images in a zero-gap container. No extra labels or whitespace
+    # between the landscape front and the smaller, centered portrait back.
+    with st.container(
+        key=f"swu_leader_image_stack_{safe_id}",
+        gap=None,
+        border=False,
+    ):
+        _leader_image_button(leader, versions, current, "front", safe_id)
+        _leader_image_button(leader, versions, current, "back", safe_id)
 
     st.markdown(
         '<p style="text-align:center; font-weight:600; margin:0.25rem 0">'
