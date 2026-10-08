@@ -2,6 +2,11 @@
 import math
 import streamlit as st
 from supabase import create_client
+from swu_grouping import (
+    get_grouped_page,
+    load_printing_options,
+    show_grouped_card,
+)
 
 st.set_page_config(
     page_title="SWU Deck Builder",
@@ -823,8 +828,8 @@ with card_tab:
             try:
                 db = get_database()
 
-                query = db.table("swu_regular_cards").select(
-                    "uuid,name,subtitle,set_code,"
+                query = db.table("swu_grouped_cards").select(
+                    "uuid,gameplay_id,name,subtitle,set_code,"
                     "collector_number,card_type,arena,"
                     "cost,power,hp,rarity,aspects,traits,"
                     "keywords,rules_text,front_image_url",
@@ -907,74 +912,61 @@ with card_tab:
                     levels
                 )
 
+               
+                # Group matching printings into unique gameplay cards.
                 if query is None:
                     cards, total = [], 0
-
                 else:
-                    def fetch_page(page):
-                        start = (page - 1) * page_size
-
-                        return (
-                            query
-                            .order("name")
-                            .order("subtitle")
-                            .order("uuid")
-                            .range(
-                                start,
-                                start + page_size - 1
-                            )
-                            .execute()
-                        )
-
-                    response = fetch_page(st.session_state.page)
-
-                    cards = response.data or []
-                    total = response.count or 0
-
-                    total_pages = max(
-                        1,
-                        math.ceil(total / page_size)
+                    cards, total = get_grouped_page(
+                        query,
+                        st.session_state.page,
+                        page_size
                     )
 
-                    if st.session_state.page > total_pages:
-                        st.session_state.page = total_pages
-                        response = fetch_page(total_pages)
-                        cards = response.data or []
+                # Correct an out-of-range page if filtering reduced results.
+                total_pages = max(1, math.ceil(total / page_size))
+                if total and st.session_state.page > total_pages:
+                    st.session_state.page = total_pages
+                    cards, total = get_grouped_page(
+                        query,
+                        st.session_state.page,
+                        page_size
+                    )
 
-                st.metric("Matching printings", total)
+                st.metric("Matching cards", total)
 
                 if total:
-                    total_pages = math.ceil(total / page_size)
-
-                    start = (
-                        (st.session_state.page - 1)
-                        * page_size + 1
-                    )
-
-                    end = min(
-                        st.session_state.page * page_size,
-                        total
-                    )
+                    start = (st.session_state.page - 1) * page_size + 1
+                    end = min(st.session_state.page * page_size, total)
 
                     st.caption(
                         f"Showing {start:,}–{end:,} "
-                        f"of {total:,} printings"
+                        f"of {total:,} unique cards"
                     )
 
                     page_controls(total_pages, "top")
-
                     st.divider()
 
-                    columns = st.columns(4)
+                    # Load alternate printings for the cards on this page.
+                    printing_options = load_printing_options(
+                        get_database(),
+                        cards
+                    )
 
+                    # Keep the existing four-column gallery.
+                    columns = st.columns(4)
                     for index, card in enumerate(cards):
                         with columns[index % 4]:
-                            show_card(card)
+                            group_id = str(
+                                card.get("gameplay_id") or card["uuid"]
+                            )
+                            show_grouped_card(
+                                card,
+                                printing_options.get(group_id, [card])
+                            )
 
                     st.divider()
-
                     page_controls(total_pages, "bottom")
-
                 else:
                     st.info("No matching cards found.")
 
