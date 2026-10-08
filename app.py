@@ -374,19 +374,11 @@ with card_tab:
 
         with st.expander("Card Type & Stats", expanded=True):
             card_types = st.multiselect(
-                "Card Type",
-                [
-                    "Unit",
-                    "Unit - ground only",
-                    "Unit - space only",
-                    "Event",
-                    "Upgrade"
-                ],
+                "Card type",
+                ["Unit", "Event", "Upgrade"],
                 default=["Unit", "Event", "Upgrade"],
-                key="card_type_filter_v2",
                 on_change=reset_page
             )
-
 
             arenas = st.multiselect(
                 "Arena",
@@ -595,35 +587,10 @@ with card_tab:
                         f"%{ability.strip()}%"
                     )
 
-                
-                    # Combine selected card types with OR logic.
-                    
-                    type_conditions = []
-                    
-                    # Selecting Unit includes all units,
-                    # regardless of their arena.
-                    if "Unit" in card_types:
-                        type_conditions.append("card_type.eq.Unit")
-                    
-                    else:
-                        if "Unit - ground only" in card_types:
-                            type_conditions.append(
-                                "and(card_type.eq.Unit,arena.eq.Ground)"
-                            )
-                    
-                        if "Unit - space only" in card_types:
-                            type_conditions.append(
-                                "and(card_type.eq.Unit,arena.eq.Space)"
-                            )
-                    
-                    if "Event" in card_types:
-                        type_conditions.append("card_type.eq.Event")
-                    
-                    if "Upgrade" in card_types:
-                        type_conditions.append("card_type.eq.Upgrade")
-                    
-                    query = query.or_(",".join(type_conditions))
+                query = query.in_("card_type", card_types)
 
+                if arenas:
+                    query = query.in_("arena", arenas)
 
                 if chosen_sets:
                     query = query.in_(
