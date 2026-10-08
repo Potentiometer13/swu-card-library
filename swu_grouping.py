@@ -109,12 +109,14 @@ def load_printing_options(db, visible_cards):
 
 
 def printing_id(card):
-    code = str(card.get("collector_number") or "").strip()
-    if code:
-        return code
+    """Display IDs consistently as SET_NUMBER (unless already prefixed)."""
+    number = str(card.get("collector_number") or card.get("card_number") or "").strip()
     set_code = str(card.get("set_code") or "").strip()
-    number = str(card.get("card_number") or "").strip()
-    return f"{set_code}_{number}" if set_code and number else "Unknown ID"
+    if not number:
+        return "Unknown ID"
+    if "_" in number or not set_code:
+        return number
+    return f"{set_code}_{number}"
 
 
 def printing_label(card):
