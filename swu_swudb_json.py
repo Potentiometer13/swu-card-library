@@ -10,6 +10,10 @@ from collections import defaultdict
 
 from swu_grouping import printing_id, printing_sort_key
 from swu_twin_suns import card_identity, card_copy_limit, leaders_can_pair
+from swu_collection_progress import (
+    EXTENSION_NAME, EXTENSION_VERSION, normalize_record,
+    normalize_progress_map, required_cards,
+)
 
 MAX_JSON_BYTES = 2_000_000
 MAX_DECK_ENTRIES = 500
@@ -66,6 +70,22 @@ def export_swudb(snapshot, author=""):
         "deck": deck,
         "sideboard": [],
     }
+    # Standard SWUDB fields are unchanged. The user verified that SWUDB
+    # accepts this additional namespaced property.
+    required = required_cards(leaders, base, cards)
+    by_gid = normalize_progress_map(snapshot.get("card_progress", {}), required)
+    card_progress = {}
+    for gid, (card, qty) in required.items():
+        ext_id = printing_id(card)
+        normalize_id(ext_id)
+        rec = by_gid.get(gid, {"inDeck": 0, "ownedElsewhere": 0})
+        card_progress[ext_id] = {"inDeck": rec["inDeck"]}
+        if rec["ownedElsewhere"]:
+            card_progress[ext_id]["ownedElsewhere"] = rec["ownedElsewhere"]
+    result[EXTENSION_NAME] = {
+        "version": EXTENSION_VERSION,
+        "cardProgress": card_progress,
+    }
     return json.dumps(result, indent=2, ensure_ascii=False).encode("utf-8")
 
 
@@ -113,9 +133,29 @@ def parse_swudb_json(raw_bytes):
         raise ValueError("sideboard must be a list.")
     if sideboard:
         raise ValueError("Twin Suns has no sideboard here; remove sideboard entries before importing to avoid data loss.")
+    extension = payload.get(EXTENSION_NAME)
+    progress = {}
+    if extension is not None:
+        if not isinstance(extension, dict) or type(extension.get("version")) is not int or extension["version"] != EXTENSION_VERSION:
+            raise ValueError("Unsupported swuCardLibrary extension version (expected 1).")
+        raw_progress = extension.get("cardProgress", {})
+        if not isinstance(raw_progress, dict) or len(raw_progress) > MAX_DECK_ENTRIES + 3:
+            raise ValueError("swuCardLibrary.cardProgress must be an object of card IDs.")
+        deck_ids = {normalize_id(i) for i in [leader[0], second[0], base[0]]}
+        deck_ids.update(normalize_id(i) for i, _ in entries)
+        for identifier, value in raw_progress.items():
+            key = normalize_id(identifier)
+            if key not in deck_ids:
+                raise ValueError(f"Progress references {identifier}, which is not in the deck.")
+            if key in progress:
+                raise ValueError(f"Duplicate progress ID for {identifier}.")
+            # Validate the shape and numeric fields; quantities are checked
+            # after resolving playable card identities from the database.
+            progress[key] = normalize_record(value, MAX_COPIES, strict=True)
     return {
         "name": name.strip(), "author": author.strip(),
         "leaders": [leader, second], "base": base, "deck": entries,
+        "progress": progress,
     }
 
 
@@ -214,9 +254,30 @@ def resolve_swudb(db, parsed):
                 f"Copy limit exceeded for {entry['card'].get('name')}: "
                 f"{entry['count']} copies; allowed {limit}. No changes made."
             )
+    selected_card_rows = list(entries.values())
+    required = required_cards(leaders, base, selected_card_rows)
+    progress_by_gid = {}
+    requested = (
+        [(i, card) for i, card in zip(requested_leaders, leaders)]
+        + [(parsed["base"][0], base)]
+        + [(i, lookup(card_rows, i)) for i, _ in parsed["deck"]]
+    )
+    for identifier, card in requested:
+        if card is None:
+            continue
+        value = parsed.get("progress", {}).get(normalize_id(identifier))
+        if value is not None:
+            gid = card_identity(card)
+            old = progress_by_gid.get(gid, {"inDeck": 0, "ownedElsewhere": 0})
+            progress_by_gid[gid] = {
+                "inDeck": old["inDeck"] + value["inDeck"],
+                "ownedElsewhere": old["ownedElsewhere"] + value["ownedElsewhere"],
+            }
+    # Validate AFTER merging different printing IDs for the same gameplay card.
+    progress = normalize_progress_map(progress_by_gid, required, strict=True)
     return {
         "version": 1, "format": "Twin Suns", "name": parsed["name"],
         "author": parsed["author"],
         "leaders": leaders, "base": base,
-        "cards": list(entries.values()),
+        "cards": selected_card_rows, "card_progress": progress,
     }

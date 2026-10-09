@@ -6,7 +6,14 @@ minimum 80 draw-deck cards; singleton unless specific card text overrides.
 
 from collections import Counter
 from html import escape
+from io import StringIO
+import csv
 import re
+
+from swu_collection_progress import (
+    PROGRESS_SESSION_KEY, game_id, get_progress, set_progress,
+    normalize_progress_map, needs_to_buy, progress_totals, required_cards,
+)
 
 DECK_MINIMUM = 80
 ALIGNMENT = ("Heroism", "Villainy")
@@ -143,6 +150,9 @@ def add_card(session, card):
     if limit is not None and count >= limit:
         return False, "Copy limit reached for this card."
     entries[gid] = {"card": dict(card), "count": count + 1}
+    # A copy-limit exception can change a checkbox into a numeric input.
+    # Keep any existing widget state aligned with the new quantity.
+    _sync_progress_widget_values(session, gid, count + 1)
     return True, "Added to the draw deck."
 
 
@@ -153,8 +163,12 @@ def remove_card(session, gid):
     entry = entries[gid]
     if entry["count"] <= 1:
         del entries[gid]
+        (session.get(PROGRESS_SESSION_KEY) or {}).pop(gid, None)
+        for field in ("inDeck", "ownedElsewhere"):
+            session.pop(_progress_widget_key(gid, field), None)
     else:
         entry["count"] -= 1
+        _sync_progress_widget_values(session, gid, entry["count"])
 
 
 def aspect_supply(leaders, base):
@@ -196,6 +210,76 @@ def display_card_name(card):
     name = str(card.get("name") or "Unknown card")
     subtitle = str(card.get("subtitle") or "").strip()
     return f"{name} — {subtitle}" if subtitle else name
+
+
+def _progress_widget_key(gid, field):
+    return f"swu_progress_{'in' if field == 'inDeck' else 'owned'}_{gid}"
+
+
+def _sync_progress_widget_values(session, gid, quantity):
+    if gid not in (session.get(PROGRESS_SESSION_KEY) or {}):
+        return
+    record = get_progress(session, gid, quantity)
+    session[PROGRESS_SESSION_KEY][gid] = record
+    for field in ("inDeck", "ownedElsewhere"):
+        key = _progress_widget_key(gid, field)
+        if key in session:
+            session[key] = bool(record[field]) if quantity == 1 else record[field]
+
+
+def _on_progress_widget_change(session, gid, quantity, changed):
+    """Keep physical/owned counts mutually bounded by deck quantity."""
+    key_in = _progress_widget_key(gid, "inDeck")
+    key_owned = _progress_widget_key(gid, "ownedElsewhere")
+    record = set_progress(
+        session, gid, quantity,
+        int(session.get(key_in, 0)), int(session.get(key_owned, 0)),
+        changed=changed,
+    )
+    # Callbacks run before the next render; widget state is safe to update here.
+    for field, key in (("inDeck", key_in), ("ownedElsewhere", key_owned)):
+        session[key] = bool(record[field]) if quantity == 1 else record[field]
+
+
+def _progress_widget(st, session, gid, quantity, field):
+    record = get_progress(session, gid, quantity)
+    key = _progress_widget_key(gid, field)
+    default = bool(record[field]) if quantity == 1 else record[field]
+    # Widget state is initialized before rendering; when importing another
+    # deck restore_snapshot clears these keys to avoid stale checkbox values.
+    if key not in session:
+        session[key] = default
+    if quantity == 1:
+        st.checkbox(
+            "In deck" if field == "inDeck" else "Owned elsewhere",
+            key=key, label_visibility="collapsed",
+            on_change=_on_progress_widget_change,
+            args=(session, gid, quantity, field),
+        )
+    else:
+        st.number_input(
+            "In deck" if field == "inDeck" else "Owned elsewhere",
+            min_value=0, max_value=quantity, step=1,
+            key=key, label_visibility="collapsed",
+            on_change=_on_progress_widget_change,
+            args=(session, gid, quantity, field),
+        )
+
+
+def _shopping_csv(required, progress):
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Card ID", "Card name", "Required", "In deck", "Owned elsewhere", "Need to buy"])
+    for gid, (card, qty) in sorted(required.items(), key=lambda item: display_card_name(item[1][0]).casefold()):
+        record = get_progress({PROGRESS_SESSION_KEY: progress}, gid, qty)
+        missing = needs_to_buy(qty, record)
+        if missing:
+            number = str(card.get("collector_number") or "")
+            code = str(card.get("set_code") or "")
+            card_id = number if "_" in number else f"{code}_{number}"
+            writer.writerow([card_id, display_card_name(card), qty, record["inDeck"],
+                             record["ownedElsewhere"], missing])
+    return output.getvalue().encode("utf-8-sig")
 
 
 def render_deck_builder(st):
@@ -267,8 +351,67 @@ def render_deck_builder(st):
     else:
         st.success("Twin Suns deck meets the implemented construction checks.")
 
+    # Physical collection tracking includes the two leaders and selected base.
+    required = required_cards(leaders, base, list(entries.values()))
+    progress = normalize_progress_map(session.get(PROGRESS_SESSION_KEY, {}), required)
+    totals = progress_totals(required, progress)
+
+    st.subheader("Collection Progress")
+    c_required, c_in, c_elsewhere, c_missing = st.columns(4, gap="small")
+    with c_required:
+        st.metric("Required", totals["required"])
+    with c_in:
+        st.metric("In deck", totals["inDeck"])
+    with c_elsewhere:
+        st.metric("Owned elsewhere", totals["ownedElsewhere"])
+    with c_missing:
+        st.metric("Need to buy", totals["needToBuy"])
+    if totals["required"]:
+        st.progress(totals["inDeck"] / totals["required"])
+    st.caption("In deck = physically added · Owned elsewhere = available but not yet added · Need to buy = not owned")
+
+    if leaders or base:
+        with st.expander("Leader and base collection progress", expanded=False):
+            st.caption("Track the physical copies of your selected leaders and base too.")
+            label, in_col, owned_col, missing_col = st.columns([4, 1.3, 1.3, 1.2])
+            with in_col:
+                st.caption("In deck")
+            with owned_col:
+                st.caption("Owned elsewhere")
+            with missing_col:
+                st.caption("Need to buy")
+            selections = [(f"Leader {i + 1}: {display_card_name(card)}", card)
+                          for i, card in enumerate(leaders)]
+            if base:
+                selections.append((f"Base: {display_card_name(base)}", base))
+            for title, card in selections:
+                gid = game_id(card)
+                rec = get_progress(session, gid, 1)
+                c_name, c_in, c_owned, c_missing = st.columns([4, 1.3, 1.3, 1.2])
+                with c_name:
+                    st.write(title)
+                with c_in:
+                    _progress_widget(st, session, gid, 1, "inDeck")
+                with c_owned:
+                    _progress_widget(st, session, gid, 1, "ownedElsewhere")
+                with c_missing:
+                    st.write(needs_to_buy(1, rec))
+
+    st.download_button(
+        "Download shopping list (CSV)",
+        data=_shopping_csv(required, progress),
+        file_name="twin_suns_shopping_list.csv",
+        mime="text/csv",
+        key="swu_shopping_csv",
+        disabled=totals["needToBuy"] == 0,
+    )
+
     st.subheader("Draw Deck")
-    st.caption("Browse the Cards tab and use Add to Deck under each image. Off-aspect cards remain allowed.")
+    st.caption("Mark each physical copy as In deck or Owned elsewhere. The shopping list updates automatically.")
+    filter_choice = st.selectbox(
+        "Show cards", ["All cards", "Need to buy", "Not yet in physical deck"],
+        key="swu_deck_progress_filter",
+    )
     if not entries:
         st.info("No cards added yet.")
         return
@@ -278,11 +421,22 @@ def render_deck_builder(st):
         str(kv[1]["card"].get("cost") or "0").zfill(4),
         display_card_name(kv[1]["card"]).casefold(),
     ))
+    st.caption("Card  ·  In deck  ·  Owned elsewhere  ·  Need to buy  ·  Remove")
+    visible_count = 0
     for gid, entry in all_entries:
         card = entry["card"]
-        quantity = entry["count"]
+        quantity = int(entry["count"])
+        record = get_progress(session, gid, quantity)
+        to_buy = needs_to_buy(quantity, record)
+        if filter_choice == "Need to buy" and not to_buy:
+            continue
+        if filter_choice == "Not yet in physical deck" and record["inDeck"] >= quantity:
+            continue
+        visible_count += 1
         missing = missing_aspect_icons(card, supply) if leaders and base else 0
-        info, actions = st.columns([5, 1], gap="small")
+        info, in_col, owned_col, missing_col, actions = st.columns(
+            [4.5, 1.2, 1.35, 1.1, 1], gap="small"
+        )
         with info:
             name = escape(display_card_name(card))
             st.markdown(f"**{quantity}× {name}**")
@@ -293,6 +447,14 @@ def render_deck_builder(st):
             if limit != 1:
                 details += f" · Copy exception: {'unlimited' if limit is None else str(limit)}"
             st.caption(details)
+        with in_col:
+            _progress_widget(st, session, gid, quantity, "inDeck")
+        with owned_col:
+            _progress_widget(st, session, gid, quantity, "ownedElsewhere")
+        with missing_col:
+            st.write(to_buy)
         with actions:
             st.button("− 1", key=f"swu_deck_remove_{gid}", on_click=remove_card,
                       args=(session, gid), use_container_width=True)
+    if not visible_count:
+        st.info("No cards match this progress filter.")

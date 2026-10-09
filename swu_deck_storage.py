@@ -9,6 +9,9 @@ import json
 import re
 
 from swu_swudb_json import export_swudb, parse_swudb_json, resolve_swudb
+from swu_collection_progress import (
+    PROGRESS_SESSION_KEY, normalize_progress_map, required_cards,
+)
 from swu_twin_suns import (
     card_copy_limit, card_identity, get_selected_leaders, leaders_can_pair,
 )
@@ -99,10 +102,13 @@ def normalize_snapshot(data):
     author = str(data.get("author") or "").strip()
     if len(author) > 120:
         raise ValueError("Author name must be at most 120 characters.")
+    card_rows = [entries[gid] for gid in sorted(entries)]
+    required = required_cards(leaders, base, card_rows)
+    progress = normalize_progress_map(data.get("card_progress", {}), required)
     return {
         "version": SCHEMA_VERSION, "format": FORMAT, "name": name, "author": author,
         "leaders": leaders, "base": base,
-        "cards": [entries[gid] for gid in sorted(entries)],
+        "cards": card_rows, "card_progress": progress,
     }
 
 
@@ -113,6 +119,7 @@ def snapshot_from_session(session, name):
         "leaders": get_selected_leaders(session),
         "base": session.get("swu_selected_base"),
         "cards": list((session.get("swu_twin_suns_cards") or {}).values()),
+        "card_progress": session.get(PROGRESS_SESSION_KEY) or {},
     }
     return normalize_snapshot(raw)
 
@@ -133,6 +140,12 @@ def restore_snapshot(session, snapshot):
     }
     session["swu_deck_name"] = data["name"]
     session["swu_deck_author"] = data.get("author", "")
+    session[PROGRESS_SESSION_KEY] = data.get("card_progress", {})
+    # Remove old progress widget values so importing another deck displays
+    # its values, instead of retaining the prior deck's toggles.
+    for key in list(session):
+        if key.startswith(("swu_progress_in_", "swu_progress_owned_")):
+            session.pop(key, None)
     # Refresh leader-dependent defaults in the Bases filter; don't touch
     # card search filters or user layout preferences.
     for key in ("swu_base_last_leader_signature", "swu_base_last_leader_ids"):
@@ -204,7 +217,7 @@ def render_deck_storage(st, make_client):
         # All four tabs must redraw from the newly restored deck.
         st.rerun()
     st.subheader("My Twin Suns Decks")
-    st.caption("Download or import SWUDB-compatible JSON, or save private decks to an account.")
+    st.caption("SWUDB-compatible JSON also saves card collection progress. Online saves preserve it too.")
     deck_name = st.text_input(
         "Deck name", value="Untitled Twin Suns Deck", key="swu_deck_name",
         max_chars=MAX_NAME_LENGTH,
