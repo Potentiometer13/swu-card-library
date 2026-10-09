@@ -348,18 +348,55 @@ def fetch_bulk_printing_info(db, candidates):
     return result
 
 
-def bulk_needed_text(candidates, progress, printing_info):
-    """One line per missing non-Rare/non-Legendary card with every set code.
+# Major expansion codes and titles, in release order. Keep this aligned with
+# MAIN_EXPANSION_SET_CODES in app.py when new sets are added.
+MAIN_EXPANSION_NAMES = {
+    "SOR": "Spark of Rebellion",
+    "SHD": "Shadows of the Galaxy",
+    "TWI": "Twilight of the Republic",
+    "JTL": "Jump to Lightspeed",
+    "LOF": "Legends of the Force",
+    "SEC": "Secrets of Power",
+    "LAW": "A Lawless Time",
+    "ASH": "Ashes of the Empire",
+    "HMW": "Homeworlds",
+    "IC27": "Icons 2027",
+}
 
-    Format: '2 Card Name - Subtitle — JTL, LAW, SOR'.  Set codes only; no
-    individual collector numbers. This is an inventory/sourcing list, not
-    TCGplayer Mass Entry (which uses the separate Needed Card List export).
+
+def bulk_parent_set(code):
+    """Return the main expansion associated with a set code, if clear.
+
+    Codes like SORP, SOROP, SOR-WPP and PSOR belong in the SOR section;
+    generic conventions/promos (C24, P25, TS26) don't identify a parent by
+    themselves. Do not guess which expansion a generic promo belongs to.
     """
-    lines = []
-    for gid, (card, quantity) in sorted(
-        candidates.items(),
-        key=lambda kv: display_card_name(kv[1][0]).casefold(),
-    ):
+    code = str(code or "").strip().upper()
+    if code in MAIN_EXPANSION_NAMES:
+        return code
+    for main in MAIN_EXPANSION_NAMES:
+        if code.startswith(main) and len(code) > len(main):
+            return main
+        # Explicit set-specific prerelease, event and token prefixes.
+        if any(code.startswith(prefix + main) for prefix in ("P", "E", "T")):
+            return main
+    return None
+
+
+def bulk_needed_text(candidates, progress, printing_info):
+    """Group a missing-card shopping list under *every* applicable main set.
+
+    The first expansion in release order carries the purchase quantity and
+    an ``also in ...`` reminder. Subsequent expansions list the same card as
+    ``((Name))`` without a quantity, to avoid double-counting purchases.
+    Set-specific promotional printing codes are shown beside the entry for
+    that expansion. Cards found only in unassociated niche/promo sets appear
+    under Miscellaneous.
+    """
+    sections = {code: [] for code in MAIN_EXPANSION_NAMES}
+    miscellaneous = []
+
+    for gid, (card, quantity) in candidates.items():
         record = get_progress({PROGRESS_SESSION_KEY: progress}, gid, quantity)
         missing = needs_to_buy(quantity, record)
         if not missing:
@@ -367,13 +404,69 @@ def bulk_needed_text(candidates, progress, printing_info):
         data = printing_info.get(gid)
         if not data or not data.get("sets"):
             raise ValueError(f"Missing set list for {display_card_name(card)}.")
-        # A Special printing may be a promo of an originally Rare/Legendary card.
+        # Some Special promo printings belong to Rare/Legendary game cards.
         if {str(x).casefold() for x in data.get("rarities", ())} & {"rare", "legendary"}:
             continue
+
+        codes = {str(x).strip().upper() for x in data["sets"] if str(x).strip()}
+        by_main = {main: set() for main in MAIN_EXPANSION_NAMES}
+        generic_niche = set()
+        for code in codes:
+            parent = bulk_parent_set(code)
+            if parent:
+                by_main[parent].add(code)
+            else:
+                generic_niche.add(code)
+
         name = " ".join(display_card_name(card).replace("—", "-").split())
-        codes = ", ".join(sorted(data["sets"]))
-        lines.append(f"{missing} {name} — {codes}")
-    return "\n".join(lines) + ("\n" if lines else "")
+        present_mains = [main for main in MAIN_EXPANSION_NAMES if by_main[main]]
+        if not present_mains:
+            # Generic promos and convention cards with no known expansion.
+            line = f"{missing} {name} — " + ", ".join(sorted(codes))
+            miscellaneous.append((name.casefold(), line))
+            continue
+
+        primary = present_mains[0]
+        for main in present_mains:
+            first = main == primary
+            line = f"{missing} {name}" if first else f"(({name}))"
+            notes = []
+            # Promo codes belonging to this specific expansion; the regular
+            # set code is implied by the section heading.
+            niche_codes = set(by_main[main]) - {main}
+            # Unassociated generic promos are noted once, on the first line.
+            if first:
+                niche_codes |= generic_niche
+            if niche_codes:
+                notes.append(", ".join(sorted(niche_codes)))
+            if first and len(present_mains) > 1:
+                other_sets = []
+                for other in present_mains[1:]:
+                    variants = sorted(by_main[other] - {other})
+                    reminder = other
+                    if variants:
+                        reminder += " (" + ", ".join(variants) + ")"
+                    other_sets.append(reminder)
+                notes.append("also in " + ", ".join(other_sets))
+            if notes:
+                line += " — " + "; ".join(notes)
+            sections[main].append((name.casefold(), line))
+
+    output = []
+    for code, title in MAIN_EXPANSION_NAMES.items():
+        if not sections[code]:
+            continue
+        if output:
+            output.append("")
+        output.append(f"{title} ({code}):")
+        output.extend(line for _, line in sorted(sections[code]))
+    if miscellaneous:
+        if output:
+            output.append("")
+        output.append("Miscellaneous")
+        output.extend(line for _, line in sorted(miscellaneous))
+    return "\n".join(output) + ("\n" if output else "")
+
 
 def tcgplayer_missing_text(required, progress):
     """Create TCGplayer Mass Entry lines for cards we still need to purchase.
