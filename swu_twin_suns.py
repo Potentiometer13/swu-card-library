@@ -742,174 +742,209 @@ def render_deck_builder(st):
     else:
         st.success("Twin Suns deck meets the implemented construction checks.")
 
-    # Physical collection tracking includes the two leaders and selected base.
-    required = required_cards(leaders, base, list(entries.values()))
-    progress = normalize_progress_map(session.get(PROGRESS_SESSION_KEY, {}), required)
-    totals = progress_totals(required, progress)
+    @st.fragment
+    def render_collection_and_compact_deck():
+        # Physical collection tracking includes the two leaders and selected base.
+        required = required_cards(leaders, base, list(entries.values()))
+        progress = normalize_progress_map(session.get(PROGRESS_SESSION_KEY, {}), required)
+        totals = progress_totals(required, progress)
 
-    st.subheader("Collection Progress")
-    c_required, c_in, c_elsewhere, c_missing = st.columns(4, gap="small")
-    with c_required:
-        st.metric("Required", totals["required"])
-    with c_in:
-        st.metric("In deck", totals["inDeck"])
-    with c_elsewhere:
-        st.metric("Owned elsewhere", totals["ownedElsewhere"])
-    with c_missing:
-        st.metric("Need to buy", totals["needToBuy"])
-    if totals["required"]:
-        st.progress(totals["inDeck"] / totals["required"])
-    st.caption("In deck = physically added · Owned elsewhere = available but not yet added · Need to buy = not owned")
+        st.subheader("Collection Progress")
+        c_required, c_in, c_elsewhere, c_missing = st.columns(4, gap="small")
+        with c_required:
+            st.metric("Required", totals["required"])
+        with c_in:
+            st.metric("In deck", totals["inDeck"])
+        with c_elsewhere:
+            st.metric("Owned elsewhere", totals["ownedElsewhere"])
+        with c_missing:
+            st.metric("Need to buy", totals["needToBuy"])
+        if totals["required"]:
+            st.progress(totals["inDeck"] / totals["required"])
+        st.caption("In deck = physically added · Owned elsewhere = available but not yet added · Need to buy = not owned")
 
-    if leaders or base:
-        with st.expander("Leader and base collection progress", expanded=False):
-            st.caption("Track the physical copies of your selected leaders and base too.")
-            label, in_col, owned_col, missing_col = st.columns([4, 1.3, 1.3, 1.2])
-            with in_col:
-                st.caption("In deck")
-            with owned_col:
-                st.caption("Owned elsewhere")
-            with missing_col:
-                st.caption("Need to buy")
-            selections = [(f"Leader {i + 1}: {display_card_name(card)}", card)
-                          for i, card in enumerate(leaders)]
-            if base:
-                selections.append((f"Base: {display_card_name(base)}", base))
-            for title, card in selections:
-                gid = game_id(card)
-                rec = get_progress(session, gid, 1)
-                c_name, c_in, c_owned, c_missing = st.columns([4, 1.3, 1.3, 1.2])
-                with c_name:
-                    st.write(title)
-                with c_in:
-                    _progress_widget(st, session, gid, 1, "inDeck")
-                with c_owned:
-                    _progress_widget(st, session, gid, 1, "ownedElsewhere")
-                with c_missing:
-                    st.write(needs_to_buy(1, rec))
+        if leaders or base:
+            with st.expander("Leader and base collection progress", expanded=False):
+                st.caption("Track the physical copies of your selected leaders and base too.")
+                label, in_col, owned_col, missing_col = st.columns([4, 1.3, 1.3, 1.2])
+                with in_col:
+                    st.caption("In deck")
+                with owned_col:
+                    st.caption("Owned elsewhere")
+                with missing_col:
+                    st.caption("Need to buy")
+                selections = [(f"Leader {i + 1}: {display_card_name(card)}", card)
+                              for i, card in enumerate(leaders)]
+                if base:
+                    selections.append((f"Base: {display_card_name(base)}", base))
+                for title, card in selections:
+                    gid = game_id(card)
+                    rec = get_progress(session, gid, 1)
+                    c_name, c_in, c_owned, c_missing = st.columns([4, 1.3, 1.3, 1.2])
+                    with c_name:
+                        st.write(title)
+                    with c_in:
+                        _progress_widget(st, session, gid, 1, "inDeck")
+                    with c_owned:
+                        _progress_widget(st, session, gid, 1, "ownedElsewhere")
+                    with c_missing:
+                        st.write(needs_to_buy(1, rec))
 
-    # Leave the right side free for a future dynamic card/details panel.
-    deck_left, deck_right = st.columns([3, 2], gap="medium")
 
-    with deck_left:
-        st.subheader("Deck")
-        st.caption("Compact deck list · click the status to mark physical copies in or out.")
-        filter_choice = st.selectbox(
-            "Show cards", ["All cards", "Need to buy", "Not yet in physical deck"],
-            key="swu_deck_progress_filter",
-        )
+        # A tighter left panel, with space on the right for the next interactive view.
+        deck_left, deck_right = st.columns([2, 3], gap="medium")
 
-        if not entries:
-            st.info("No cards added yet.")
-        else:
-            sections = grouped_deck_rows(entries, session, filter_choice)
-            if not sections:
-                st.info("No cards match this progress filter.")
+        with deck_left:
+            st.subheader("Deck")
+            filter_choice = st.selectbox(
+                "Show cards",
+                ["All cards", "Need to buy", "Not yet in physical deck"],
+                key="swu_deck_progress_filter",
+            )
+            if not entries:
+                st.info("No cards added yet.")
             else:
-                # Scope styling to this gallery only: other tabs are unchanged.
-                st.markdown("""
-                <style>
-                .st-key-swu_compact_deck_list [data-testid="stHorizontalBlock"] {
-                    gap: 0.22rem !important;
-                    align-items: center !important;
-                }
-                .st-key-swu_compact_deck_list [data-testid="stVerticalBlock"] {
-                    gap: 0.12rem !important;
-                }
-                .st-key-swu_compact_deck_list [data-testid="stMarkdownContainer"] p {
-                    margin: 0 !important;
-                    line-height: 1.1rem !important;
-                }
-                .st-key-swu_compact_deck_list [data-testid="stButton"] button {
-                    min-height: 1.65rem !important;
-                    height: 1.65rem !important;
-                    padding: 0 0.28rem !important;
-                    font-size: 0.76rem !important;
-                    border-radius: 5px !important;
-                    line-height: 1 !important;
-                }
-                </style>
-                """, unsafe_allow_html=True)
+                sections = grouped_deck_rows(entries, session, filter_choice)
+                if not sections:
+                    st.info("No cards match this progress filter.")
+                else:
+                    # Scope all layout and button CSS to this one table.
+                    st.markdown("""
+                    <style>
+                    .st-key-swu_compact_deck_list [data-testid="stHorizontalBlock"] {
+                        gap: 0.24rem !important;
+                        align-items: center !important;
+                        min-height: 1.48rem !important;
+                    }
+                    .st-key-swu_compact_deck_list [data-testid="stVerticalBlock"] {
+                        gap: 0.02rem !important;
+                    }
+                    .st-key-swu_compact_deck_list [data-testid="stMarkdownContainer"] p {
+                        margin: 0 !important;
+                        line-height: 1.05rem !important;
+                    }
+                    .st-key-swu_compact_deck_list [data-testid="stButton"] {
+                        margin: 0 !important;
+                        padding: 0 !important;
+                    }
+                    .st-key-swu_compact_deck_list [data-testid="stButton"] button {
+                        min-height: 1.38rem !important;
+                        height: 1.38rem !important;
+                        min-width: 1.44rem !important;
+                        width: 1.44rem !important;
+                        padding: 0 !important;
+                        margin: 0 !important;
+                        font-size: 0.74rem !important;
+                        font-weight: 700 !important;
+                        line-height: 1 !important;
+                        border-radius: 4px !important;
+                    }
+                    .st-key-swu_compact_deck_list [class*="st-key-swu_deck_added_yes_"] button {
+                        background-color: #15803d !important;
+                        border-color: #166534 !important;
+                        color: #ffffff !important;
+                    }
+                    .st-key-swu_compact_deck_list [class*="st-key-swu_deck_added_no_"] button {
+                        background-color: #ba303b !important;
+                        border-color: #9f2530 !important;
+                        color: #ffffff !important;
+                    }
+                    .st-key-swu_compact_deck_list [class*="st-key-swu_deck_remove_"] button {
+                        width: 1.85rem !important;
+                        min-width: 1.85rem !important;
+                        font-size: 0.69rem !important;
+                        font-weight: 600 !important;
+                    }
+                    </style>
+                    """, unsafe_allow_html=True)
 
-                with st.container(key="swu_compact_deck_list"):
-                    # Qty | Card | Aspects | Cost | Physical status | Remove
-                    widths = [0.48, 4.1, 1.17, 0.53, 1.37, 0.42]
-                    header_columns = st.columns(widths, gap="small")
-                    for column, heading in zip(
-                        header_columns,
-                        ("Qty", "Card name", "Aspects", "Cost", "Status", ""),
-                    ):
-                        with column:
-                            st.caption(heading)
-
-                    for section_name, section_entries in sections:
-                        section_total = sum(int(entry["count"]) for _, entry in section_entries)
-                        st.markdown(
-                            f"**{section_name}** · {section_total} "
-                            f"card{'s' if section_total != 1 else ''}"
+                    with st.container(key="swu_compact_deck_list"):
+                        # Qty | Name | Aspects | Cost | Added | Remove
+                        widths = [0.42, 3.65, 0.88, 0.47, 0.47, 0.60]
+                        headings = ("Qty", "Card name", "Aspects", "Cost", "Added", "Remove")
+                        header_cols = st.columns(
+                            widths, gap="xxsmall", vertical_alignment="center", wrap=False
                         )
-                        for gid, entry in section_entries:
-                            card = entry["card"]
-                            quantity = int(entry["count"])
-                            record = get_progress(session, gid, quantity)
-                            in_deck = record["inDeck"] >= quantity
-                            off_aspect = (
-                                missing_aspect_icons(card, supply)
-                                if leaders and base else 0
-                            )
-                            qty_col, name_col, aspect_col, cost_col, status_col, remove_col = (
-                                st.columns(widths, gap="small")
-                            )
-                            with qty_col:
-                                st.markdown(f"**{quantity}×**")
-                            with name_col:
-                                name = escape(display_card_name(card), quote=True)
+                        for col, heading in zip(header_cols, headings):
+                            with col:
                                 st.markdown(
-                                    f'<div title="{name}" style="font-size:0.8rem;'
-                                    f'overflow:hidden;text-overflow:ellipsis;'
-                                    f'white-space:nowrap;line-height:1.1rem">{name}</div>',
+                                    f'<span style="font-size:0.70rem;color:#808894">{heading}</span>',
                                     unsafe_allow_html=True,
-                                )
-                            with aspect_col:
-                                icons = "".join(ICON.get(a, "") for a in (card.get("aspects") or []))
-                                tooltip = (
-                                    f"Off-aspect penalty: +{off_aspect * 2} resources"
-                                    if off_aspect else "Aspects"
-                                )
-                                st.markdown(
-                                    f'<span title="{escape(tooltip, quote=True)}" '
-                                    f'style="font-size:0.8rem;white-space:nowrap">'
-                                    f'{escape(icons) if icons else "—"}'
-                                    f'{" ⚠️" if off_aspect else ""}</span>',
-                                    unsafe_allow_html=True,
-                                )
-                            with cost_col:
-                                cost = card.get("cost")
-                                st.markdown(
-                                    str(cost) if cost is not None and str(cost) != "" else "—"
-                                )
-                            with status_col:
-                                st.button(
-                                    "✓ In Deck" if in_deck else "○ Out of Deck",
-                                    key=f"swu_deck_status_{gid}",
-                                    type="primary" if in_deck else "secondary",
-                                    on_click=toggle_deck_card_status,
-                                    args=(session, gid, quantity),
-                                    use_container_width=True,
-                                    help=(
-                                        "Mark all required copies as not in your physical deck"
-                                        if in_deck else
-                                        "Mark all required copies as placed in your physical deck"
-                                    ),
-                                )
-                            with remove_col:
-                                st.button(
-                                    "−", key=f"swu_deck_remove_{gid}",
-                                    on_click=remove_card,
-                                    args=(session, gid),
-                                    help="Remove one copy from the deck list",
                                 )
 
-    with deck_right:
-        # Reserved for the interactive panel planned for the next stage.
-        st.empty()
+                        for section_name, section_entries in sections:
+                            section_total = sum(int(entry["count"]) for _, entry in section_entries)
+                            st.markdown(
+                                f"**{section_name}** · {section_total} "
+                                f"card{'s' if section_total != 1 else ''}"
+                            )
+                            for gid, entry in section_entries:
+                                card = entry["card"]
+                                quantity = int(entry["count"])
+                                record = get_progress(session, gid, quantity)
+                                in_deck = record["inDeck"] >= quantity
+                                off_aspect = (
+                                    missing_aspect_icons(card, supply)
+                                    if leaders and base else 0
+                                )
+                                qty_col, name_col, aspect_col, cost_col, added_col, remove_col = (
+                                    st.columns(
+                                        widths, gap="xxsmall",
+                                        vertical_alignment="center", wrap=False,
+                                    )
+                                )
+                                with qty_col:
+                                    st.markdown(f"**{quantity}×**")
+                                with name_col:
+                                    name = escape(display_card_name(card), quote=True)
+                                    st.markdown(
+                                        f'<div title="{name}" '
+                                        f'style="font-size:calc(0.8rem + 2px);'
+                                        f'overflow:hidden;text-overflow:ellipsis;'
+                                        f'white-space:nowrap;line-height:1.14rem">{name}</div>',
+                                        unsafe_allow_html=True,
+                                    )
+                                with aspect_col:
+                                    icons = "".join(ICON.get(a, "") for a in (card.get("aspects") or []))
+                                    tooltip = (
+                                        f"Off-aspect penalty: +{off_aspect * 2} resources"
+                                        if off_aspect else "Aspects"
+                                    )
+                                    st.markdown(
+                                        f'<span title="{escape(tooltip, quote=True)}" '
+                                        f'style="font-size:0.82rem;white-space:nowrap">'
+                                        f'{escape(icons) if icons else "—"}'
+                                        f'{" ⚠️" if off_aspect else ""}</span>',
+                                        unsafe_allow_html=True,
+                                    )
+                                with cost_col:
+                                    cost = card.get("cost")
+                                    st.markdown(
+                                        str(cost) if cost is not None and str(cost) != "" else "—"
+                                    )
+                                with added_col:
+                                    st.button(
+                                        "✓" if in_deck else "✕",
+                                        key=f"swu_deck_added_{'yes' if in_deck else 'no'}_{gid}",
+                                        on_click=toggle_deck_card_status,
+                                        args=(session, gid, quantity),
+                                        help=(
+                                            "Added to physical deck — click to mark not added"
+                                            if in_deck else
+                                            "Not added to physical deck — click to mark added"
+                                        ),
+                                    )
+                                with remove_col:
+                                    if st.button(
+                                        "−1", key=f"swu_deck_remove_{gid}",
+                                        help="Remove one copy from the deck list",
+                                    ):
+                                        remove_card(session, gid)
+                                        # Ensure the draw-deck total at the top refreshes.
+                                        st.rerun()
+
+        with deck_right:
+            # Reserved for the dynamic card/details panel planned next.
+            st.empty()
+
+    render_collection_and_compact_deck()
