@@ -5,6 +5,7 @@ client; row-level security isolates each person's decks.
 """
 
 from datetime import datetime, timezone
+import time
 import json
 import re
 
@@ -15,6 +16,7 @@ from swu_collection_progress import (
 from swu_twin_suns import (
     card_copy_limit, card_identity, get_selected_leaders, leaders_can_pair,
     tcgplayer_missing_text,
+    bulk_needed_candidates, fetch_bulk_printing_info, bulk_needed_text,
 )
 
 SAVE_TABLE = "swu_saved_decks"
@@ -270,7 +272,7 @@ def render_deck_storage(st, make_client):
         elif state.get("swu_import_success"):
             st.success(state["swu_import_success"])
 
-        json_col, shopping_col = st.columns(2, gap="small")
+        json_col, shopping_col, bulk_col = st.columns(3, gap="small")
         with json_col:
             if snapshot is not None:
                 try:
@@ -314,11 +316,47 @@ def render_deck_storage(st, make_client):
                 disabled=not shopping_text,
                 help="One line per missing card, formatted for TCGplayer Mass Entry.",
             )
+        # Lookup ALL set codes from the underlying printings, not just the
+        # printing currently selected in the deck. Cache across reruns.
+        try:
+            candidates = bulk_needed_candidates(selections, progress)
+            if candidates:
+                key = tuple(sorted((str(gid), str(card.get("card_type") or ""))
+                                   for gid, (card, _) in candidates.items()))
+                cached = state.get("swu_bulk_printing_cache")
+                if (isinstance(cached, dict) and cached.get("key") == key
+                        and time.time() - cached.get("created_at", 0) < 3600):
+                    printing_info = cached["printing_info"]
+                else:
+                    db = make_client(
+                        st.secrets["SUPABASE_URL"],
+                        st.secrets["SUPABASE_PUBLISHABLE_KEY"],
+                    )
+                    printing_info = fetch_bulk_printing_info(db, candidates)
+                    state["swu_bulk_printing_cache"] = {
+                        "key": key, "created_at": time.time(),
+                        "printing_info": printing_info,
+                    }
+                bulk_text = bulk_needed_text(candidates, progress, printing_info)
+            else:
+                bulk_text = ""
+        except Exception as exc:
+            st.warning(f"Bulk export unavailable: {exc}")
+            bulk_text = ""
+        with bulk_col:
+            st.download_button(
+                "Export Needed Bulk",
+                data=bulk_text.encode("utf-8"),
+                file_name=_deck_filename(deck_name).removesuffix(".json") + "_needed_bulk.txt",
+                mime="text/plain", key="swu_shopping_bulk_text",
+                use_container_width=True, disabled=not bulk_text,
+                help="Missing cards other than Rare/Legendary. Each line includes all available set codes.",
+            )
         st.caption(
-            "The needed-card TXT contains one 'quantity name - subtitle' line "
-            "per card. Copy its contents into TCGplayer Mass Entry (Star Wars: Unlimited)."
+            "Needed Card List: quantity + card name for TCGplayer Mass Entry. "
+            "Needed Bulk: missing non-Rare/non-Legendary cards with every set code "
+            "found in the database (including promotional sets)."
         )
-
     with st.expander("Online deck saves (account required)", expanded=True):
         if not state.get("swu_auth_user_id"):
             st.caption("Make a free account to save multiple named decks privately across devices.")

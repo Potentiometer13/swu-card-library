@@ -264,6 +264,117 @@ def _progress_widget(st, session, gid, quantity, field):
         )
 
 
+
+def bulk_needed_candidates(required, progress):
+    """Missing cards except those explicitly listed as Rare or Legendary.
+
+    Supplied printing rarity is the preliminary filter; the cross-printing
+    lookup below catches rare cards selected using a Special promo printing.
+    """
+    banned = {"rare", "legendary"}
+    result = {}
+    for gid, (card, quantity) in required.items():
+        record = get_progress({PROGRESS_SESSION_KEY: progress}, gid, quantity)
+        if needs_to_buy(quantity, record) == 0:
+            continue
+        if str(card.get("rarity") or "").strip().casefold() in banned:
+            continue
+        result[gid] = (card, quantity)
+    return result
+
+
+def fetch_bulk_printing_info(db, candidates):
+    """Fetch all matching printings across Cards, Leaders and Bases views.
+
+    Uses gameplay IDs to identify matching printings, not SET_NUMBER, so all
+    sets (including niche/promotional releases) can be returned. The query is
+    batched and paged to avoid Supabase's default 1000-row API cap.
+    """
+    table_for_type = {
+        "unit": "swu_grouped_cards",
+        "event": "swu_grouped_cards",
+        "upgrade": "swu_grouped_cards",
+        "leader": "swu_grouped_leaders",
+        "base": "swu_grouped_bases",
+    }
+    by_table = {}
+    for gid, (card, _) in candidates.items():
+        kind = str(card.get("card_type") or "").strip().casefold()
+        if kind not in table_for_type:
+            raise ValueError(f"Unknown card type for {display_card_name(card)}: {kind}")
+        by_table.setdefault(table_for_type[kind], []).append(gid)
+    result = {gid: {"sets": set(), "rarities": set()} for gid in candidates}
+    for table, gids in by_table.items():
+        for start in range(0, len(gids), 40):
+            batch = gids[start:start + 40]
+            offset = 0
+            while True:
+                response = (
+                    db.table(table)
+                    .select("gameplay_id,set_code,rarity", count="exact")
+                    .in_("gameplay_id", batch)
+                    .order("gameplay_id")
+                    .order("set_code")
+                    .order("uuid")
+                    .range(offset, offset + 499)
+                    .execute()
+                )
+                records = response.data or []
+                if not records:
+                    break
+                for record in records:
+                    gid = str(record.get("gameplay_id") or "")
+                    if gid not in result:
+                        continue
+                    code = str(record.get("set_code") or "").strip().upper()
+                    rarity = str(record.get("rarity") or "").strip().casefold()
+                    if code:
+                        result[gid]["sets"].add(code)
+                    if rarity:
+                        result[gid]["rarities"].add(rarity)
+                offset += len(records)
+                # Use the total count when the server has a lower row cap.
+                if response.count is not None and offset >= response.count:
+                    break
+                if response.count is None and len(records) < 500:
+                    break
+                if offset > 100000:
+                    raise ValueError("Printing lookup exceeded the expected record limit.")
+    for gid, info in result.items():
+        if not info["sets"]:
+            raise ValueError(
+                f"Could not determine all printing sets for {display_card_name(candidates[gid][0])}."
+            )
+    return result
+
+
+def bulk_needed_text(candidates, progress, printing_info):
+    """One line per missing non-Rare/non-Legendary card with every set code.
+
+    Format: '2 Card Name - Subtitle — JTL, LAW, SOR'.  Set codes only; no
+    individual collector numbers. This is an inventory/sourcing list, not
+    TCGplayer Mass Entry (which uses the separate Needed Card List export).
+    """
+    lines = []
+    for gid, (card, quantity) in sorted(
+        candidates.items(),
+        key=lambda kv: display_card_name(kv[1][0]).casefold(),
+    ):
+        record = get_progress({PROGRESS_SESSION_KEY: progress}, gid, quantity)
+        missing = needs_to_buy(quantity, record)
+        if not missing:
+            continue
+        data = printing_info.get(gid)
+        if not data or not data.get("sets"):
+            raise ValueError(f"Missing set list for {display_card_name(card)}.")
+        # A Special printing may be a promo of an originally Rare/Legendary card.
+        if {str(x).casefold() for x in data.get("rarities", ())} & {"rare", "legendary"}:
+            continue
+        name = " ".join(display_card_name(card).replace("—", "-").split())
+        codes = ", ".join(sorted(data["sets"]))
+        lines.append(f"{missing} {name} — {codes}")
+    return "\n".join(lines) + ("\n" if lines else "")
+
 def tcgplayer_missing_text(required, progress):
     """Create TCGplayer Mass Entry lines for cards we still need to purchase.
 
@@ -292,6 +403,57 @@ def tcgplayer_missing_text(required, progress):
         lines.append(f"{missing} {title}")
     return ("\n".join(lines) + "\n") if lines else ""
 
+
+
+def _deck_section(card):
+    """Display all four main deck categories in the user's preferred order."""
+    card_type = str(card.get("card_type") or "").casefold()
+    arena = str(card.get("arena") or "").casefold()
+    if card_type == "unit":
+        if arena == "ground":
+            return "Ground Units"
+        if arena == "space":
+            return "Space Units"
+        return "Other Units"  # Keep cards with missing arena instead of dropping them.
+    if card_type == "event":
+        return "Events"
+    if card_type == "upgrade":
+        return "Upgrades"
+    return "Other Cards"
+
+
+def _cost_sort_key(card):
+    """Numeric card cost, with absent/X costs after numeric costs."""
+    value = card.get("cost")
+    try:
+        return (0, float(value)) if value is not None and str(value).strip() else (1, 0)
+    except (ValueError, TypeError):
+        return (1, 0)
+
+
+def grouped_deck_rows(entries, session, filter_choice):
+    """Pure grouping and sorting logic; leaves collection progress unmodified."""
+    section_order = (
+        "Ground Units", "Space Units", "Events", "Upgrades",
+        "Other Units", "Other Cards",
+    )
+    rows = {label: [] for label in section_order}
+    for gid, entry in entries.items():
+        card = entry["card"]
+        quantity = int(entry["count"])
+        record = get_progress(session, gid, quantity)
+        if filter_choice == "Need to buy" and not needs_to_buy(quantity, record):
+            continue
+        if filter_choice == "Not yet in physical deck" and record["inDeck"] >= quantity:
+            continue
+        rows[_deck_section(card)].append((gid, entry))
+    for label in section_order:
+        rows[label].sort(key=lambda item: (
+            _cost_sort_key(item[1]["card"]),
+            display_card_name(item[1]["card"]).casefold(),
+            str(item[0]),
+        ))
+    return [(label, rows[label]) for label in section_order if rows[label]]
 
 def render_deck_builder(st):
     session = st.session_state
@@ -408,8 +570,8 @@ def render_deck_builder(st):
                 with c_missing:
                     st.write(needs_to_buy(1, rec))
 
-    st.subheader("Draw Deck")
-    st.caption("Mark each physical copy as In deck or Owned elsewhere. The shopping list updates automatically.")
+    st.subheader("Deck")
+    st.caption("Compact deck list · check off physical copies or remove cards directly.")
     filter_choice = st.selectbox(
         "Show cards", ["All cards", "Need to buy", "Not yet in physical deck"],
         key="swu_deck_progress_filter",
@@ -418,45 +580,64 @@ def render_deck_builder(st):
         st.info("No cards added yet.")
         return
 
-    all_entries = sorted(entries.items(), key=lambda kv: (
-        (kv[1]["card"].get("card_type") or ""),
-        str(kv[1]["card"].get("cost") or "0").zfill(4),
-        display_card_name(kv[1]["card"]).casefold(),
-    ))
-    st.caption("Card  ·  In deck  ·  Owned elsewhere  ·  Need to buy  ·  Remove")
-    visible_count = 0
-    for gid, entry in all_entries:
-        card = entry["card"]
-        quantity = int(entry["count"])
-        record = get_progress(session, gid, quantity)
-        to_buy = needs_to_buy(quantity, record)
-        if filter_choice == "Need to buy" and not to_buy:
-            continue
-        if filter_choice == "Not yet in physical deck" and record["inDeck"] >= quantity:
-            continue
-        visible_count += 1
-        missing = missing_aspect_icons(card, supply) if leaders and base else 0
-        info, in_col, owned_col, missing_col, actions = st.columns(
-            [4.5, 1.2, 1.35, 1.1, 1], gap="small"
-        )
-        with info:
-            name = escape(display_card_name(card))
-            st.markdown(f"**{quantity}× {name}**")
-            details = f"{card.get('card_type') or 'Card'} · Cost {card.get('cost') if card.get('cost') is not None else '—'}"
-            if missing:
-                details += f" · Off-aspect penalty +{missing * 2} resources"
-            limit = card_copy_limit(card)
-            if limit != 1:
-                details += f" · Copy exception: {'unlimited' if limit is None else str(limit)}"
-            st.caption(details)
-        with in_col:
-            _progress_widget(st, session, gid, quantity, "inDeck")
-        with owned_col:
-            _progress_widget(st, session, gid, quantity, "ownedElsewhere")
-        with missing_col:
-            st.write(to_buy)
-        with actions:
-            st.button("− 1", key=f"swu_deck_remove_{gid}", on_click=remove_card,
-                      args=(session, gid), use_container_width=True)
-    if not visible_count:
+    sections = grouped_deck_rows(entries, session, filter_choice)
+    if not sections:
         st.info("No cards match this progress filter.")
+        return
+
+    # One header for the whole list, with no repeated two-line card details.
+    widths = [0.65, 4.7, 1.65, 0.65, 1.1, 1.15, 0.8, 0.85]
+    headings = st.columns(widths, gap="small")
+    for col, heading in zip(headings, (
+        "Qty", "Card name", "Aspects", "Cost",
+        "In deck", "Owned", "Need", "Remove",
+    )):
+        with col:
+            st.caption(heading)
+
+    for section_name, section_entries in sections:
+        section_total = sum(int(e["count"]) for _, e in section_entries)
+        st.markdown(f"**{section_name}** · {section_total} card{'s' if section_total != 1 else ''}")
+        for gid, entry in section_entries:
+            card = entry["card"]
+            quantity = int(entry["count"])
+            record = get_progress(session, gid, quantity)
+            to_buy = needs_to_buy(quantity, record)
+            off_aspect = missing_aspect_icons(card, supply) if leaders and base else 0
+            qty_col, name_col, aspect_col, cost_col, in_col, owned_col, need_col, remove_col = (
+                st.columns(widths, gap="small")
+            )
+            with qty_col:
+                st.markdown(f"**{quantity}×**")
+            with name_col:
+                name = escape(display_card_name(card), quote=True)
+                st.markdown(
+                    f'<div title="{name}" style="font-size:0.91rem;'
+                    f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
+                    f'padding-top:0.15rem">{name}</div>',
+                    unsafe_allow_html=True,
+                )
+            with aspect_col:
+                symbols = "".join(ICON.get(a, "") for a in (card.get("aspects") or []))
+                penalty = f"Off-aspect penalty: +{off_aspect * 2} resources" if off_aspect else "Aspects"
+                st.markdown(
+                    f'<span title="{escape(penalty, quote=True)}">'
+                    f'{escape(symbols) if symbols else "—"}'
+                    f'{" ⚠️" if off_aspect else ""}</span>',
+                    unsafe_allow_html=True,
+                )
+            with cost_col:
+                cost = card.get("cost")
+                st.markdown(str(cost) if cost is not None and str(cost) != "" else "—")
+            with in_col:
+                _progress_widget(st, session, gid, quantity, "inDeck")
+            with owned_col:
+                _progress_widget(st, session, gid, quantity, "ownedElsewhere")
+            with need_col:
+                st.markdown(str(to_buy))
+            with remove_col:
+                st.button(
+                    "− 1", key=f"swu_deck_remove_{gid}",
+                    on_click=remove_card, args=(session, gid),
+                    use_container_width=True,
+                )
