@@ -265,6 +265,24 @@ def _progress_widget(st, session, gid, quantity, field):
 
 
 
+def toggle_deck_card_status(session, gid, quantity):
+    """Mark every required copy as physically In Deck or Out of Deck.
+
+    Existing imported progress remains readable, including partial quantities.
+    A user click intentionally moves the card to a simple all-in/all-out
+    status and clears the old `ownedElsewhere` designation for that card.
+    """
+    current = get_progress(session, gid, quantity)
+    new_in_deck = 0 if current["inDeck"] >= quantity else quantity
+    set_progress(
+        session, gid, quantity,
+        in_deck=new_in_deck,
+        owned_elsewhere=0,
+        changed="inDeck",
+    )
+    _sync_progress_widget_values(session, gid, quantity)
+
+
 def bulk_needed_candidates(required, progress):
     """Missing cards except those explicitly listed as Rare or Legendary.
 
@@ -770,74 +788,128 @@ def render_deck_builder(st):
                 with c_missing:
                     st.write(needs_to_buy(1, rec))
 
-    st.subheader("Deck")
-    st.caption("Compact deck list · check off physical copies or remove cards directly.")
-    filter_choice = st.selectbox(
-        "Show cards", ["All cards", "Need to buy", "Not yet in physical deck"],
-        key="swu_deck_progress_filter",
-    )
-    if not entries:
-        st.info("No cards added yet.")
-        return
+    # Leave the right side free for a future dynamic card/details panel.
+    deck_left, deck_right = st.columns([3, 2], gap="medium")
 
-    sections = grouped_deck_rows(entries, session, filter_choice)
-    if not sections:
-        st.info("No cards match this progress filter.")
-        return
+    with deck_left:
+        st.subheader("Deck")
+        st.caption("Compact deck list · click the status to mark physical copies in or out.")
+        filter_choice = st.selectbox(
+            "Show cards", ["All cards", "Need to buy", "Not yet in physical deck"],
+            key="swu_deck_progress_filter",
+        )
 
-    # One header for the whole list, with no repeated two-line card details.
-    widths = [0.65, 4.7, 1.65, 0.65, 1.1, 1.15, 0.8, 0.85]
-    headings = st.columns(widths, gap="small")
-    for col, heading in zip(headings, (
-        "Qty", "Card name", "Aspects", "Cost",
-        "In deck", "Owned", "Need", "Remove",
-    )):
-        with col:
-            st.caption(heading)
+        if not entries:
+            st.info("No cards added yet.")
+        else:
+            sections = grouped_deck_rows(entries, session, filter_choice)
+            if not sections:
+                st.info("No cards match this progress filter.")
+            else:
+                # Scope styling to this gallery only: other tabs are unchanged.
+                st.markdown("""
+                <style>
+                .st-key-swu_compact_deck_list [data-testid="stHorizontalBlock"] {
+                    gap: 0.22rem !important;
+                    align-items: center !important;
+                }
+                .st-key-swu_compact_deck_list [data-testid="stVerticalBlock"] {
+                    gap: 0.12rem !important;
+                }
+                .st-key-swu_compact_deck_list [data-testid="stMarkdownContainer"] p {
+                    margin: 0 !important;
+                    line-height: 1.1rem !important;
+                }
+                .st-key-swu_compact_deck_list [data-testid="stButton"] button {
+                    min-height: 1.65rem !important;
+                    height: 1.65rem !important;
+                    padding: 0 0.28rem !important;
+                    font-size: 0.76rem !important;
+                    border-radius: 5px !important;
+                    line-height: 1 !important;
+                }
+                </style>
+                """, unsafe_allow_html=True)
 
-    for section_name, section_entries in sections:
-        section_total = sum(int(e["count"]) for _, e in section_entries)
-        st.markdown(f"**{section_name}** · {section_total} card{'s' if section_total != 1 else ''}")
-        for gid, entry in section_entries:
-            card = entry["card"]
-            quantity = int(entry["count"])
-            record = get_progress(session, gid, quantity)
-            to_buy = needs_to_buy(quantity, record)
-            off_aspect = missing_aspect_icons(card, supply) if leaders and base else 0
-            qty_col, name_col, aspect_col, cost_col, in_col, owned_col, need_col, remove_col = (
-                st.columns(widths, gap="small")
-            )
-            with qty_col:
-                st.markdown(f"**{quantity}×**")
-            with name_col:
-                name = escape(display_card_name(card), quote=True)
-                st.markdown(
-                    f'<div title="{name}" style="font-size:0.91rem;'
-                    f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
-                    f'padding-top:0.15rem">{name}</div>',
-                    unsafe_allow_html=True,
-                )
-            with aspect_col:
-                symbols = "".join(ICON.get(a, "") for a in (card.get("aspects") or []))
-                penalty = f"Off-aspect penalty: +{off_aspect * 2} resources" if off_aspect else "Aspects"
-                st.markdown(
-                    f'<span title="{escape(penalty, quote=True)}">'
-                    f'{escape(symbols) if symbols else "—"}'
-                    f'{" ⚠️" if off_aspect else ""}</span>',
-                    unsafe_allow_html=True,
-                )
-            with cost_col:
-                cost = card.get("cost")
-                st.markdown(str(cost) if cost is not None and str(cost) != "" else "—")
-            with in_col:
-                _progress_widget(st, session, gid, quantity, "inDeck")
-            with owned_col:
-                _progress_widget(st, session, gid, quantity, "ownedElsewhere")
-            with need_col:
-                st.markdown(str(to_buy))
-            with remove_col:
-                st.button(
-                    "− 1", key=f"swu_deck_remove_{gid}",
-                    on_click=remove_card, args=(session, gid),
-                    use_container_width=True,
-                )
+                with st.container(key="swu_compact_deck_list"):
+                    # Qty | Card | Aspects | Cost | Physical status | Remove
+                    widths = [0.48, 4.1, 1.17, 0.53, 1.37, 0.42]
+                    header_columns = st.columns(widths, gap="small")
+                    for column, heading in zip(
+                        header_columns,
+                        ("Qty", "Card name", "Aspects", "Cost", "Status", ""),
+                    ):
+                        with column:
+                            st.caption(heading)
+
+                    for section_name, section_entries in sections:
+                        section_total = sum(int(entry["count"]) for _, entry in section_entries)
+                        st.markdown(
+                            f"**{section_name}** · {section_total} "
+                            f"card{'s' if section_total != 1 else ''}"
+                        )
+                        for gid, entry in section_entries:
+                            card = entry["card"]
+                            quantity = int(entry["count"])
+                            record = get_progress(session, gid, quantity)
+                            in_deck = record["inDeck"] >= quantity
+                            off_aspect = (
+                                missing_aspect_icons(card, supply)
+                                if leaders and base else 0
+                            )
+                            qty_col, name_col, aspect_col, cost_col, status_col, remove_col = (
+                                st.columns(widths, gap="small")
+                            )
+                            with qty_col:
+                                st.markdown(f"**{quantity}×**")
+                            with name_col:
+                                name = escape(display_card_name(card), quote=True)
+                                st.markdown(
+                                    f'<div title="{name}" style="font-size:0.8rem;'
+                                    f'overflow:hidden;text-overflow:ellipsis;'
+                                    f'white-space:nowrap;line-height:1.1rem">{name}</div>',
+                                    unsafe_allow_html=True,
+                                )
+                            with aspect_col:
+                                icons = "".join(ICON.get(a, "") for a in (card.get("aspects") or []))
+                                tooltip = (
+                                    f"Off-aspect penalty: +{off_aspect * 2} resources"
+                                    if off_aspect else "Aspects"
+                                )
+                                st.markdown(
+                                    f'<span title="{escape(tooltip, quote=True)}" '
+                                    f'style="font-size:0.8rem;white-space:nowrap">'
+                                    f'{escape(icons) if icons else "—"}'
+                                    f'{" ⚠️" if off_aspect else ""}</span>',
+                                    unsafe_allow_html=True,
+                                )
+                            with cost_col:
+                                cost = card.get("cost")
+                                st.markdown(
+                                    str(cost) if cost is not None and str(cost) != "" else "—"
+                                )
+                            with status_col:
+                                st.button(
+                                    "✓ In Deck" if in_deck else "○ Out of Deck",
+                                    key=f"swu_deck_status_{gid}",
+                                    type="primary" if in_deck else "secondary",
+                                    on_click=toggle_deck_card_status,
+                                    args=(session, gid, quantity),
+                                    use_container_width=True,
+                                    help=(
+                                        "Mark all required copies as not in your physical deck"
+                                        if in_deck else
+                                        "Mark all required copies as placed in your physical deck"
+                                    ),
+                                )
+                            with remove_col:
+                                st.button(
+                                    "−", key=f"swu_deck_remove_{gid}",
+                                    on_click=remove_card,
+                                    args=(session, gid),
+                                    help="Remove one copy from the deck list",
+                                )
+
+    with deck_right:
+        # Reserved for the interactive panel planned for the next stage.
+        st.empty()
