@@ -14,6 +14,7 @@ from swu_collection_progress import (
 )
 from swu_twin_suns import (
     card_copy_limit, card_identity, get_selected_leaders, leaders_can_pair,
+    tcgplayer_missing_text,
 )
 
 SAVE_TABLE = "swu_saved_decks"
@@ -230,18 +231,6 @@ def render_deck_storage(st, make_client):
     except ValueError as exc:
         st.warning(str(exc))
         snapshot = None
-    if snapshot is not None:
-        try:
-            swudb_bytes = export_swudb(snapshot, author=author)
-        except ValueError as exc:
-            st.caption(f"SWUDB export: {exc}")
-        else:
-            st.download_button(
-                "Export SWUDB JSON", swudb_bytes,
-                file_name=_deck_filename(deck_name), mime="application/json",
-                key="swu_export_swudb", use_container_width=False,
-            )
-
     # Streamlit calls this only when the uploaded file changes, not on every
     # widget interaction or rerun. This prevents a previous upload from
     # unexpectedly overwriting changes made to the deck afterward.
@@ -267,17 +256,68 @@ def render_deck_storage(st, make_client):
             state["swu_pending_deck_restore"] = resolved
             state["swu_import_success"] = f"Imported '{parsed['name']}' successfully."
 
-    with st.expander("Import SWUDB JSON", expanded=False):
+    # Consolidate portable file import and both exports in one place.
+    with st.expander("Import/Export", expanded=False):
         st.file_uploader(
-            "Choose a SWUDB deck (.json)",
+            "Upload JSON",
             type=["json"],
             key="swu_deck_import",
             on_change=_auto_import_swudb,
+            help="Automatically imports a SWUDB-compatible deck JSON file.",
         )
         if state.get("swu_import_error"):
             st.error(f"Import failed: {state['swu_import_error']}")
         elif state.get("swu_import_success"):
             st.success(state["swu_import_success"])
+
+        json_col, shopping_col = st.columns(2, gap="small")
+        with json_col:
+            if snapshot is not None:
+                try:
+                    swudb_bytes = export_swudb(snapshot, author=author)
+                except ValueError as exc:
+                    st.warning(f"Deck JSON export unavailable: {exc}")
+                else:
+                    st.download_button(
+                        "Export Deck JSON",
+                        swudb_bytes,
+                        file_name=_deck_filename(deck_name),
+                        mime="application/json",
+                        key="swu_export_swudb",
+                        use_container_width=True,
+                    )
+            else:
+                st.button("Export Deck JSON", disabled=True, use_container_width=True)
+
+        with shopping_col:
+            try:
+                # Include the leaders and base as well as the draw deck.
+                selections = required_cards(
+                    get_selected_leaders(state),
+                    state.get("swu_selected_base"),
+                    list((state.get("swu_twin_suns_cards") or {}).values()),
+                )
+                progress = normalize_progress_map(
+                    state.get(PROGRESS_SESSION_KEY) or {}, selections
+                )
+                shopping_text = tcgplayer_missing_text(selections, progress)
+            except ValueError as exc:
+                st.warning(f"Needed-card export unavailable: {exc}")
+                shopping_text = ""
+            st.download_button(
+                "Export Needed Card List",
+                data=shopping_text.encode("utf-8"),
+                file_name=_deck_filename(deck_name).removesuffix(".json") + "_needed_cards.txt",
+                mime="text/plain",
+                key="swu_shopping_text",
+                use_container_width=True,
+                disabled=not shopping_text,
+                help="One line per missing card, formatted for TCGplayer Mass Entry.",
+            )
+        st.caption(
+            "The needed-card TXT contains one 'quantity name - subtitle' line "
+            "per card. Copy its contents into TCGplayer Mass Entry (Star Wars: Unlimited)."
+        )
 
     with st.expander("Online deck saves (account required)", expanded=True):
         if not state.get("swu_auth_user_id"):

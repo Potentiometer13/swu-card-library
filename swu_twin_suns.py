@@ -6,8 +6,6 @@ minimum 80 draw-deck cards; singleton unless specific card text overrides.
 
 from collections import Counter
 from html import escape
-from io import StringIO
-import csv
 import re
 
 from swu_collection_progress import (
@@ -266,20 +264,33 @@ def _progress_widget(st, session, gid, quantity, field):
         )
 
 
-def _shopping_csv(required, progress):
-    output = StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Card ID", "Card name", "Required", "In deck", "Owned elsewhere", "Need to buy"])
-    for gid, (card, qty) in sorted(required.items(), key=lambda item: display_card_name(item[1][0]).casefold()):
+def tcgplayer_missing_text(required, progress):
+    """Create TCGplayer Mass Entry lines for cards we still need to purchase.
+
+    TCGplayer matches `quantity name - subtitle` without requiring a
+    particular set or printing. Include leaders and base when missing.
+    No header: Mass Entry treats each nonempty line as one requested card.
+    """
+    lines = []
+    for gid, (card, qty) in sorted(
+        required.items(),
+        key=lambda item: display_card_name(item[1][0]).casefold(),
+    ):
         record = get_progress({PROGRESS_SESSION_KEY: progress}, gid, qty)
         missing = needs_to_buy(qty, record)
-        if missing:
-            number = str(card.get("collector_number") or "")
-            code = str(card.get("set_code") or "")
-            card_id = number if "_" in number else f"{code}_{number}"
-            writer.writerow([card_id, display_card_name(card), qty, record["inDeck"],
-                             record["ownedElsewhere"], missing])
-    return output.getvalue().encode("utf-8-sig")
+        if not missing:
+            continue
+        name = str(card.get("name") or "").strip()
+        subtitle = str(card.get("subtitle") or "").strip()
+        if not name:
+            # Never silently produce an unidentifiable shopping-list entry.
+            raise ValueError("A card needed for your shopping list has no name.")
+        title = f"{name} - {subtitle}" if subtitle else name
+        # Keep physical characters legible and avoid one card becoming several
+        # Mass Entry rows if imported text contains line breaks.
+        title = " ".join(title.split())
+        lines.append(f"{missing} {title}")
+    return ("\n".join(lines) + "\n") if lines else ""
 
 
 def render_deck_builder(st):
@@ -396,15 +407,6 @@ def render_deck_builder(st):
                     _progress_widget(st, session, gid, 1, "ownedElsewhere")
                 with c_missing:
                     st.write(needs_to_buy(1, rec))
-
-    st.download_button(
-        "Download shopping list (CSV)",
-        data=_shopping_csv(required, progress),
-        file_name="twin_suns_shopping_list.csv",
-        mime="text/csv",
-        key="swu_shopping_csv",
-        disabled=totals["needToBuy"] == 0,
-    )
 
     st.subheader("Draw Deck")
     st.caption("Mark each physical copy as In deck or Owned elsewhere. The shopping list updates automatically.")
