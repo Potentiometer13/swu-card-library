@@ -283,6 +283,20 @@ def bulk_needed_candidates(required, progress):
     return result
 
 
+def all_needed_candidates(required, progress):
+    """Return every missing gameplay card, regardless of rarity.
+
+    Includes missing leaders and bases as well as draw-deck cards.
+    This is the shared input for Bulk, Non-Bulk and All exports.
+    """
+    result = {}
+    for gid, (card, quantity) in required.items():
+        record = get_progress({PROGRESS_SESSION_KEY: progress}, gid, quantity)
+        if needs_to_buy(quantity, record) > 0:
+            result[gid] = (card, quantity)
+    return result
+
+
 def fetch_bulk_printing_info(db, candidates):
     """Fetch all matching printings across Cards, Leaders and Bases views.
 
@@ -383,7 +397,7 @@ def bulk_parent_set(code):
     return None
 
 
-def bulk_needed_text(candidates, progress, printing_info):
+def bulk_needed_text(candidates, progress, printing_info, rarity_filter="bulk"):
     """Group a missing-card shopping list under *every* applicable main set.
 
     The first expansion in release order carries the purchase quantity and
@@ -392,7 +406,14 @@ def bulk_needed_text(candidates, progress, printing_info):
     Set-specific promotional printing codes are shown beside the entry for
     that expansion. Cards found only in unassociated niche/promo sets appear
     under Miscellaneous.
+
+    rarity_filter: "bulk" (exclude Rare/Legendary), "nonbulk" (only
+    Rare/Legendary), or "all" (every missing card). The filters use all
+    known printing rarities so a Special promotional printing cannot make
+    a normally Rare card appear on the bulk list.
     """
+    if rarity_filter not in {"bulk", "nonbulk", "all"}:
+        raise ValueError("Unknown set-list export category.")
     sections = {code: [] for code in MAIN_EXPANSION_NAMES}
     miscellaneous = []
 
@@ -404,8 +425,16 @@ def bulk_needed_text(candidates, progress, printing_info):
         data = printing_info.get(gid)
         if not data or not data.get("sets"):
             raise ValueError(f"Missing set list for {display_card_name(card)}.")
-        # Some Special promo printings belong to Rare/Legendary game cards.
-        if {str(x).casefold() for x in data.get("rarities", ())} & {"rare", "legendary"}:
+        # Classify from both the chosen and every other known printing.
+        # This makes Bulk + Non-Bulk an exact partition of All Needed.
+        all_rarities = {str(x).strip().casefold() for x in data.get("rarities", ())}
+        chosen_rarity = str(card.get("rarity") or "").strip().casefold()
+        if chosen_rarity:
+            all_rarities.add(chosen_rarity)
+        is_nonbulk = bool(all_rarities & {"rare", "legendary"})
+        if rarity_filter == "bulk" and is_nonbulk:
+            continue
+        if rarity_filter == "nonbulk" and not is_nonbulk:
             continue
 
         codes = {str(x).strip().upper() for x in data["sets"] if str(x).strip()}
@@ -547,6 +576,84 @@ def grouped_deck_rows(entries, session, filter_choice):
             str(item[0]),
         ))
     return [(label, rows[label]) for label in section_order if rows[label]]
+
+
+def official_deck_list_text(snapshot):
+    """Plain-text Twin Suns roster, sorted like the on-screen Deck list.
+
+    Intentionally excludes ownership/shopping fields. The current Twin Suns
+    app has no sideboard editor; the section is present for future support.
+    """
+    if not isinstance(snapshot, dict):
+        raise ValueError("A deck snapshot is required.")
+
+    def card_name(card):
+        if not isinstance(card, dict):
+            return "Not selected"
+        name = " ".join(str(card.get("name") or "").split())
+        subtitle = " ".join(str(card.get("subtitle") or "").split())
+        if not name:
+            return "Not selected"
+        return f"{name} - {subtitle}" if subtitle else name
+
+    leaders = snapshot.get("leaders") or []
+    base = snapshot.get("base")
+    raw_cards = snapshot.get("cards") or []
+    section_order = (
+        "Ground Units", "Space Units", "Events", "Upgrades",
+        "Other Units", "Other Cards",
+    )
+    by_section = {section: [] for section in section_order}
+    main_total = 0
+    for entry in raw_cards:
+        card = entry["card"]
+        quantity = int(entry["count"])
+        if quantity < 1:
+            raise ValueError("Deck quantities must be positive integers.")
+        main_total += quantity
+        section = _deck_section(card)
+        by_section[section].append((card, quantity))
+
+    # Same category order, numeric cost and alphabetical tie-break as the
+    # on-screen grouped_deck_rows() function.
+    for section in section_order:
+        by_section[section].sort(key=lambda item: (
+            _cost_sort_key(item[0]),
+            display_card_name(item[0]).casefold(),
+            str(item[0].get("gameplay_id") or item[0].get("uuid") or ""),
+        ))
+
+    lines = [
+        f"Deck Name: {snapshot.get('name') or 'Untitled Twin Suns Deck'}",
+        f"Leader 1: {card_name(leaders[0]) if len(leaders) > 0 else 'Not selected'}",
+        f"Leader 2: {card_name(leaders[1]) if len(leaders) > 1 else 'Not selected'}",
+        f"Base: {card_name(base)}",
+        "",
+        f"Main Deck Total: {main_total}",
+    ]
+    for section in section_order:
+        for card, quantity in by_section[section]:
+            lines.append(f"{quantity} {card_name(card)}")
+
+    # Twin Suns does not currently expose a sideboard editor. Keep the
+    # requested section in the export; any future sideboard data is supported
+    # when it is present in the snapshot.
+    raw_sideboard = snapshot.get("sideboard") or []
+    sideboard = []
+    for entry in raw_sideboard:
+        card = entry.get("card") if isinstance(entry, dict) else None
+        qty = int(entry.get("count", 0)) if isinstance(entry, dict) else 0
+        if card and qty > 0:
+            sideboard.append((card, qty))
+    sideboard.sort(key=lambda item: (
+        section_order.index(_deck_section(item[0])),
+        _cost_sort_key(item[0]),
+        display_card_name(item[0]).casefold(),
+    ))
+    lines.extend(("", f"Sideboard Total: {sum(qty for _, qty in sideboard)}"))
+    lines.extend(f"{qty} {card_name(card)}" for card, qty in sideboard)
+    return "\n".join(lines) + "\n"
+
 
 def render_deck_builder(st):
     session = st.session_state
