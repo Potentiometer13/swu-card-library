@@ -159,6 +159,42 @@ def restore_snapshot(session, snapshot):
     return data
 
 
+def start_new_deck(session):
+    """Reset only the working deck; never delete cloud saves or owned inventory.
+
+    This is used in a Streamlit button callback, so it runs BEFORE keyed
+    deck-name and author inputs are instantiated on the next script rerun.
+    """
+    # Author is an account/user preference, not a property to throw away
+    # whenever a new deck is started.
+    author = session.get("swu_deck_author") or "Potentiometer13"
+    empty_snapshot = {
+        "version": SCHEMA_VERSION,
+        "format": FORMAT,
+        "name": "Untitled Twin Suns Deck",
+        "author": author,
+        "leaders": [],
+        "base": None,
+        "cards": [],
+        "card_progress": {},
+    }
+    restore_snapshot(session, empty_snapshot)
+    session["swu_deck_progress_filter"] = "All cards"
+
+    # Streamlit file uploaders cannot be reset by assigning their state.
+    # Changing the widget key mounts an empty uploader instead.
+    session["swu_deck_import_revision"] = (
+        int(session.get("swu_deck_import_revision", 0)) + 1
+    )
+    for key in (
+        "swu_pending_deck_restore", "swu_import_error", "swu_import_success",
+        "swu_bulk_added_notice", "swu_bulk_printing_cache",
+        "swu_save_notice", "swu_confirm_new_deck",
+    ):
+        session.pop(key, None)
+    session["swu_new_deck_notice"] = True
+
+
 def backup_bytes(snapshot):
     return json.dumps(normalize_snapshot(snapshot), indent=2, ensure_ascii=False).encode("utf-8")
 
@@ -243,7 +279,34 @@ def render_deck_storage(st, make_client):
         restore_snapshot(state, pending)
         # All four tabs must redraw from the newly restored deck.
         st.rerun()
-    st.subheader("My Twin Suns Decks")
+    title_col, new_col = st.columns([6, 1], vertical_alignment="center")
+    with title_col:
+        st.subheader("My Twin Suns Decks")
+    with new_col:
+        if st.button(
+            "＋ New Deck", key="swu_new_deck_begin",
+            help="Start a blank deck. Saved online decks and My Collection stay untouched.",
+            use_container_width=True,
+        ):
+            state["swu_confirm_new_deck"] = True
+    if state.get("swu_confirm_new_deck"):
+        st.warning(
+            "Start a new, empty deck? Any unsaved changes to the current "
+            "deck will be lost. Decks already saved online and your "
+            "collection inventory will not be affected."
+        )
+        confirm_col, cancel_col, _ = st.columns([1.1, 0.8, 4], gap="small")
+        with confirm_col:
+            st.button(
+                "Clear & start new", key="swu_new_deck_confirm",
+                type="primary", on_click=start_new_deck, args=(state,),
+            )
+        with cancel_col:
+            if st.button("Cancel", key="swu_new_deck_cancel"):
+                state.pop("swu_confirm_new_deck", None)
+                st.rerun()
+    if state.pop("swu_new_deck_notice", False):
+        st.success("New empty deck started. Your saved decks and collection are unchanged.")
     st.caption("SWUDB-compatible JSON also saves card collection progress. Online saves preserve it too.")
     deck_name = st.text_input(
         "Deck name", value="Untitled Twin Suns Deck", key="swu_deck_name",
@@ -260,10 +323,12 @@ def render_deck_storage(st, make_client):
     # Streamlit calls this only when the uploaded file changes, not on every
     # widget interaction or rerun. This prevents a previous upload from
     # unexpectedly overwriting changes made to the deck afterward.
+    upload_key = f"swu_deck_import_{state.get('swu_deck_import_revision', 0)}"
+
     def _auto_import_swudb():
         state.pop("swu_import_error", None)
         state.pop("swu_import_success", None)
-        uploaded = state.get("swu_deck_import")
+        uploaded = state.get(upload_key)
         if uploaded is None:
             return
         try:
@@ -290,7 +355,7 @@ def render_deck_storage(st, make_client):
         st.file_uploader(
             "Upload JSON",
             type=["json"],
-            key="swu_deck_import",
+            key=upload_key,
             on_change=_auto_import_swudb,
             help="Automatically imports a SWUDB-compatible deck JSON file.",
         )
