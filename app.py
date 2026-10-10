@@ -1950,8 +1950,17 @@ with deck_tab:
 with my_decks_tab:
     render_all_decks(st, create_client)
 
+
 with collection_tab:
-    render_my_collection(st, create_client, get_database(), get_filter_options)
+    render_my_collection(
+        st,
+        create_client,
+        get_database(),
+        get_filter_options,
+        get_stat_maxima,
+        is_niche_set,
+    )
+
 
 with all_decks_tab:
     st.header("All Decks")
