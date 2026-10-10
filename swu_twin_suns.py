@@ -358,9 +358,16 @@ def fetch_bulk_printing_info(db, candidates):
     by_table = {}
     for gid, (card, _) in candidates.items():
         kind = str(card.get("card_type") or "").strip().casefold()
-        if kind not in table_for_type:
-            raise ValueError(f"Unknown card type for {display_card_name(card)}: {kind}")
-        by_table.setdefault(table_for_type[kind], []).append(gid)
+        if kind in table_for_type:
+            lookup_tables = (table_for_type[kind],)
+        else:
+            # Some SWU API/import records (including Origin Tree — Shyyyo)
+            # have a blank card_type. Search the three existing printing views
+            # by gameplay ID instead of aborting every set-organized export.
+            # This also handles legacy imported leaders/bases with no type.
+            lookup_tables = tuple(dict.fromkeys(table_for_type.values()))
+        for table in lookup_tables:
+            by_table.setdefault(table, []).append(gid)
     result = {gid: {"sets": set(), "rarities": set()} for gid in candidates}
     for table, gids in by_table.items():
         for start in range(0, len(gids), 40):
@@ -541,12 +548,12 @@ def bulk_needed_text(candidates, progress, printing_info, rarity_filter="bulk"):
     return "\n".join(output) + ("\n" if output else "")
 
 
-def tcgplayer_missing_text(required, progress):
-    """Create TCGplayer Mass Entry lines for cards we still need to purchase.
+def tcgplayer_missing_text(required, progress, include_owned=False):
+    """TCGplayer Mass Entry text for needed copies, or the entire deck.
 
-    TCGplayer matches `quantity name - subtitle` without requiring a
-    particular set or printing. Include leaders and base when missing.
-    No header: Mass Entry treats each nonempty line as one requested card.
+    With include_owned=True, list every required copy regardless of physical
+    deck/other-ownership progress. Default behavior remains missing-only.
+    This includes leaders and base; Mass Entry expects no header.
     """
     lines = []
     for gid, (card, qty) in sorted(
@@ -554,8 +561,8 @@ def tcgplayer_missing_text(required, progress):
         key=lambda item: display_card_name(item[1][0]).casefold(),
     ):
         record = get_progress({PROGRESS_SESSION_KEY: progress}, gid, qty)
-        missing = needs_to_buy(qty, record)
-        if not missing:
+        needed = qty if include_owned else needs_to_buy(qty, record)
+        if not needed:
             continue
         name = str(card.get("name") or "").strip()
         subtitle = str(card.get("subtitle") or "").strip()
@@ -566,7 +573,7 @@ def tcgplayer_missing_text(required, progress):
         # Keep physical characters legible and avoid one card becoming several
         # Mass Entry rows if imported text contains line breaks.
         title = " ".join(title.split())
-        lines.append(f"{missing} {title}")
+        lines.append(f"{needed} {title}")
     return ("\n".join(lines) + "\n") if lines else ""
 
 

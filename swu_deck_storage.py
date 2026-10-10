@@ -301,10 +301,11 @@ def render_deck_storage(st, make_client):
 
     with export_tab:
         st.caption(
-            "Download your deck JSON, official-style TXT roster, TCGplayer "
-            "shopping list, or set-organized missing-card lists."
+            "Download SWUDB-compatible JSON, your official deck list, "
+            "a TCGplayer buylist, or a set-organized list of missing cards."
         )
-        json_col, official_col, shopping_col = st.columns(3, gap="small")
+        stem = _deck_filename(deck_name).removesuffix(".json")
+        json_col, official_col = st.columns(2, gap="small")
         with json_col:
             if snapshot is not None:
                 try:
@@ -335,10 +336,7 @@ def render_deck_storage(st, make_client):
             st.download_button(
                 "Export Official Deck List",
                 data=official_text.encode("utf-8"),
-                file_name=(
-                    _deck_filename(deck_name).removesuffix(".json")
-                    + "_official_deck_list.txt"
-                ),
+                file_name=stem + "_official_deck_list.txt",
                 mime="text/plain",
                 key="swu_export_official_deck_list",
                 use_container_width=True,
@@ -349,9 +347,10 @@ def render_deck_storage(st, make_client):
                 ),
             )
 
+        # Both buylist modes include leaders, base, and main-deck quantities.
+        # The All mode ignores ownership; Needed Only respects card progress.
         selections, progress = {}, {}
         try:
-            # Include both leaders and the base alongside the draw deck.
             selections = required_cards(
                 get_selected_leaders(state),
                 state.get("swu_selected_base"),
@@ -360,89 +359,108 @@ def render_deck_storage(st, make_client):
             progress = normalize_progress_map(
                 state.get(PROGRESS_SESSION_KEY) or {}, selections
             )
-            shopping_text = tcgplayer_missing_text(selections, progress)
         except ValueError as exc:
-            st.warning(f"Needed-card export unavailable: {exc}")
-            shopping_text = ""
+            st.warning(f"Buylist export unavailable: {exc}")
 
-        with shopping_col:
+        st.divider()
+        buy_col, set_col = st.columns(2, gap="medium")
+        with buy_col:
+            st.markdown("**Export Buylist**")
+            buy_mode = st.radio(
+                "Buylist content",
+                ["All", "Needed Only"],
+                index=1,  # Preserve the old needed-only shopping-list default.
+                horizontal=True,
+                key="swu_buylist_export_mode",
+                help=(
+                    "All includes every required copy, even ones you own. "
+                    "Needed Only excludes copies already accounted for in the deck."
+                ),
+            )
+            try:
+                buy_text = tcgplayer_missing_text(
+                    selections, progress, include_owned=(buy_mode == "All")
+                )
+            except ValueError as exc:
+                st.warning(f"Buylist export unavailable: {exc}")
+                buy_text = ""
+            buy_suffix = "_buylist_all.txt" if buy_mode == "All" else "_buylist_needed.txt"
             st.download_button(
-                "Export Needed Card List",
-                data=shopping_text.encode("utf-8"),
-                file_name=_deck_filename(deck_name).removesuffix(".json") + "_needed_cards.txt",
+                "Export Buylist",
+                data=buy_text.encode("utf-8"),
+                file_name=stem + buy_suffix,
                 mime="text/plain",
-                key="swu_shopping_text",
+                key="swu_export_buylist",
                 use_container_width=True,
-                disabled=not shopping_text,
-                help="One line per missing card, formatted for TCGplayer Mass Entry.",
+                disabled=not buy_text,
+                help="TCGplayer Mass Entry format: quantity followed by card name.",
             )
 
-        # One cross-printing lookup shared by all three set-grouped downloads.
-        # The cache depends on gameplay IDs and card types, not ownership state,
-        # while the generated text recalculates on every rerun.
-        grouped_exports = {"bulk": "", "nonbulk": "", "all": ""}
-        try:
-            candidates = all_needed_candidates(selections, progress)
-            if candidates:
-                key = tuple(sorted(
-                    (str(gid), str(card.get("card_type") or ""))
-                    for gid, (card, _) in candidates.items()
-                ))
-                cached = state.get("swu_bulk_printing_cache")
-                if (isinstance(cached, dict) and cached.get("key") == key
-                        and time.time() - cached.get("created_at", 0) < 3600):
-                    printing_info = cached["printing_info"]
-                else:
-                    db = make_client(
-                        st.secrets["SUPABASE_URL"],
-                        st.secrets["SUPABASE_PUBLISHABLE_KEY"],
-                    )
-                    printing_info = fetch_bulk_printing_info(db, candidates)
-                    state["swu_bulk_printing_cache"] = {
-                        "key": key, "created_at": time.time(),
-                        "printing_info": printing_info,
-                    }
-                for category in grouped_exports:
-                    grouped_exports[category] = bulk_needed_text(
+        with set_col:
+            st.markdown("**Export Needed by Set**")
+            set_mode = st.radio(
+                "Set-list content",
+                ["All", "Bulk Only", "Rare/Legendary"],
+                horizontal=True,
+                key="swu_set_export_mode",
+                help=(
+                    "All includes every missing card. Bulk Only excludes "
+                    "Rare/Legendary cards. Rare/Legendary includes only those rarities."
+                ),
+            )
+            category = {
+                "All": "all", "Bulk Only": "bulk", "Rare/Legendary": "nonbulk"
+            }[set_mode]
+            suffix = {
+                "all": "_needed_by_set.txt",
+                "bulk": "_needed_bulk_by_set.txt",
+                "nonbulk": "_needed_rare_legendary_by_set.txt",
+            }[category]
+            set_text = ""
+            try:
+                candidates = all_needed_candidates(selections, progress)
+                if candidates:
+                    # Cache only printings/rarities; compute the selected list
+                    # anew so quantity/status changes are reflected promptly.
+                    cache_key = tuple(sorted(
+                        (str(gid), str(card.get("card_type") or ""))
+                        for gid, (card, _) in candidates.items()
+                    ))
+                    cached = state.get("swu_bulk_printing_cache")
+                    if (isinstance(cached, dict)
+                            and cached.get("key") == cache_key
+                            and time.time() - cached.get("created_at", 0) < 3600):
+                        printing_info = cached["printing_info"]
+                    else:
+                        db = make_client(
+                            st.secrets["SUPABASE_URL"],
+                            st.secrets["SUPABASE_PUBLISHABLE_KEY"],
+                        )
+                        printing_info = fetch_bulk_printing_info(db, candidates)
+                        state["swu_bulk_printing_cache"] = {
+                            "key": cache_key,
+                            "created_at": time.time(),
+                            "printing_info": printing_info,
+                        }
+                    set_text = bulk_needed_text(
                         candidates, progress, printing_info, rarity_filter=category
                     )
-        except Exception as exc:
-            st.warning(f"Set-organized export unavailable: {exc}")
-            grouped_exports = {"bulk": "", "nonbulk": "", "all": ""}
-
-        bulk_col, nonbulk_col, all_col = st.columns(3, gap="small")
-        stem = _deck_filename(deck_name).removesuffix(".json")
-        for column, category, label, filename, widget_key, explanation in (
-            (
-                bulk_col, "bulk", "Export Needed Bulk", "_needed_bulk.txt",
-                "swu_shopping_bulk_text",
-                "Missing cards that are not Rare or Legendary, grouped by set.",
-            ),
-            (
-                nonbulk_col, "nonbulk", "Export Needed Non-Bulk",
-                "_needed_nonbulk.txt", "swu_shopping_nonbulk_text",
-                "Missing Rare and Legendary cards, grouped by set.",
-            ),
-            (
-                all_col, "all", "Export All Needed", "_all_needed_by_set.txt",
-                "swu_shopping_all_needed_set_text",
-                "All missing cards (Bulk + Non-Bulk), grouped by set.",
-            ),
-        ):
-            with column:
-                content = grouped_exports[category]
-                st.download_button(
-                    label,
-                    data=content.encode("utf-8"),
-                    file_name=stem + filename,
-                    mime="text/plain", key=widget_key,
-                    use_container_width=True, disabled=not content,
-                    help=explanation,
-                )
+            except Exception as exc:
+                st.warning(f"Set-organized export unavailable: {exc}")
+            st.download_button(
+                "Export Needed by Set",
+                data=set_text.encode("utf-8"),
+                file_name=stem + suffix,
+                mime="text/plain",
+                key="swu_export_needed_by_set",
+                use_container_width=True,
+                disabled=not set_text,
+                help="Only missing copies. Reprints are listed without double-counting.",
+            )
         st.caption(
-            "Bulk: missing non-Rare/non-Legendary. Non-Bulk: missing "
-            "Rare/Legendary. All Needed: both combined. Lists use set sections, "
-            "niche-set codes and ((repeat references)) without counting extra copies."
+            "Set exports list missing quantities by expansion, with niche-set "
+            "codes and ((reprint references)). Rare/Legendary is based on "
+            "all known printings of each card."
         )
     with modify_collection_tab:
         st.write("**Modify your account's collection using this deck**")
