@@ -11,7 +11,7 @@ import re
 
 from swu_swudb_json import export_swudb, parse_swudb_json, resolve_swudb
 from swu_collection_progress import (
-    PROGRESS_SESSION_KEY, normalize_progress_map, required_cards,
+    PROGRESS_SESSION_KEY, normalize_progress_map, required_cards, progress_totals,
 )
 from swu_twin_suns import (
     card_copy_limit, card_identity, get_selected_leaders, leaders_can_pair,
@@ -27,6 +27,8 @@ MAX_FILE_BYTES = 2_000_000
 MAX_ENTRIES = 500
 MAX_QUANTITY = 1000
 MAX_NAME_LENGTH = 80
+ACCOUNT_NAMES = ("Josh", "Nick", "Account 3", "Account 4", "Account 5", "Account 6")
+MIN_PASSWORD_LENGTH = 6  # Supabase Auth hosted projects reject shorter passwords.
 FIELDS = (
     "uuid", "gameplay_id", "name", "subtitle", "set_code",
     "collector_number", "variant_type", "front_image_url", "back_image_url",
@@ -191,7 +193,9 @@ def _client_from_session(st, make_client):
 
 
 def _clear_auth(state):
-    for key in ("swu_auth_access", "swu_auth_refresh", "swu_auth_user_id", "swu_auth_email"):
+    for key in ("swu_auth_access", "swu_auth_refresh", "swu_auth_user_id",
+                "swu_auth_email", "swu_auth_name", "swu_decks_cache",
+                "swu_confirm_deck_delete", "swu_cloud_selected_deck"):
         state.pop(key, None)
 
 
@@ -419,104 +423,278 @@ def render_deck_storage(st, make_client):
             "Rare/Legendary. All Needed: both combined. Lists use set sections, "
             "niche-set codes and ((repeat references)) without counting extra copies."
         )
-    with st.expander("Online deck saves (account required)", expanded=True):
-        if not state.get("swu_auth_user_id"):
-            st.caption("Make a free account to save multiple named decks privately across devices.")
-            kind = st.radio("Account action", ["Sign in", "Create account"], horizontal=True, key="swu_auth_kind")
-            with st.form("swu_login_form", clear_on_submit=True):
-                email = st.text_input("Email")
-                password = st.text_input("Password", type="password")
-                submitted = st.form_submit_button(kind)
-            if submitted:
-                if not email.strip() or not password:
-                    st.error("Enter an email address and password.")
-                else:
-                    try:
-                        client = make_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_PUBLISHABLE_KEY"])
-                        if kind == "Sign in":
-                            result = client.auth.sign_in_with_password({"email": email.strip(), "password": password})
-                        else:
-                            result = client.auth.sign_up({"email": email.strip(), "password": password})
-                        if _set_auth(state, result):
-                            st.rerun()
-                        else:
-                            st.success("Check your email to confirm your account, then sign in.")
-                    except Exception as exc:
-                        st.error(f"Account request failed: {exc}")
-            return
-        st.caption(f"Signed in as {state.get('swu_auth_email', '')}")
+    st.divider()
+    st.subheader("Save deck online")
+    if not state.get("swu_auth_user_id"):
+        st.info("Sign in on the **0. Sign in** tab to save this deck to your account.")
+    else:
+        nickname = state.get("swu_auth_name") or "your account"
+        st.caption(f"Saving to {nickname}. Existing decks with the same name are updated.")
+        if st.button(
+            "Save current deck", key="swu_cloud_save", type="primary",
+            disabled=snapshot is None,
+        ):
+            try:
+                save_deck_to_account(st, make_client, snapshot)
+                state["swu_save_notice"] = f"Saved '{snapshot['name']}' to {nickname}."
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Save failed: {exc}")
+        notice = state.pop("swu_save_notice", None)
+        if notice:
+            st.success(notice)
+        st.caption("Browse, load, or delete saved decks in **5. All Decks/Collections**.")
+
+
+def _account_emails(st):
+    """Map friendly account names to existing Supabase Auth email identities.
+
+    Email mappings are configured in private Streamlit secrets, never in git.
+    They are identifiers, not passwords. Each must be a provisioned Auth user.
+    """
+    try:
+        configured = st.secrets.get("SWU_ACCOUNT_EMAILS", {})
+        return {
+            name: str(configured.get(name) or "").strip()
+            for name in ACCOUNT_NAMES
+        }
+    except (AttributeError, TypeError, KeyError):
+        return {name: "" for name in ACCOUNT_NAMES}
+
+
+def _current_account_name(state, emails):
+    if state.get("swu_auth_name") in ACCOUNT_NAMES:
+        return state["swu_auth_name"]
+    signed_in_email = str(state.get("swu_auth_email") or "").casefold()
+    for name, email in emails.items():
+        if email.casefold() == signed_in_email and email:
+            state["swu_auth_name"] = name
+            return name
+    return "Existing account"  # Preserve sessions belonging to old email users.
+
+
+def render_sign_in(st, make_client):
+    """Six fixed names, each backed by an existing private Supabase Auth user."""
+    state = st.session_state
+    emails = _account_emails(st)
+    st.header("Sign in")
+    st.caption("Choose an account and enter its password to access its saved decks.")
+
+    if state.get("swu_auth_user_id"):
+        name = _current_account_name(state, emails)
+        st.success(f"Signed in as {name}")
         if st.button("Sign out", key="swu_sign_out"):
             try:
                 client = _client_from_session(st, make_client)
-                client.auth.sign_out()
+                if client is not None:
+                    # Avoid revoking sessions on other devices sharing this account.
+                    client.auth.sign_out(options={"scope": "local"})
             except Exception:
                 pass
             _clear_auth(state)
             st.rerun()
-        try:
-            client = _client_from_session(st, make_client)
-            user_id = state["swu_auth_user_id"]
-            rows = (
-                client.table(SAVE_TABLE)
-                .select("id,name,updated_at,deck_data")
-                .eq("user_id", user_id)
-                .order("updated_at", desc=True)
-                .limit(200)
-                .execute().data or []
-            )
-        except Exception as exc:
-            st.error(f"Couldn't load saved decks: {exc}")
-            st.info("If this is your first time, run the included SQL in Supabase to create swu_saved_decks.")
-            return
-        if snapshot is not None:
-            if st.button("Save current deck to my account", type="primary", key="swu_cloud_save"):
+
+        with st.expander("Change password"):
+            with st.form("swu_password_change_form", clear_on_submit=True):
+                current_password = st.text_input("Current password", type="password")
+                new_password = st.text_input("New password", type="password")
+                confirm_password = st.text_input("Confirm new password", type="password")
+                change = st.form_submit_button("Change password")
+            if change:
+                if not all((current_password, new_password, confirm_password)):
+                    st.error("Fill in all three password fields.")
+                elif new_password != confirm_password:
+                    st.error("The new passwords do not match.")
+                elif len(new_password) < MIN_PASSWORD_LENGTH:
+                    st.error("Supabase passwords must be at least six characters long.")
+                elif current_password == new_password:
+                    st.error("Choose a different password.")
+                else:
+                    try:
+                        email = state["swu_auth_email"]
+                        # Explicitly verify the old password before changing it.
+                        client = make_client(
+                            st.secrets["SUPABASE_URL"],
+                            st.secrets["SUPABASE_PUBLISHABLE_KEY"],
+                        )
+                        login = client.auth.sign_in_with_password({
+                            "email": email, "password": current_password,
+                        })
+                        if not login.session or str(login.user.id) != state["swu_auth_user_id"]:
+                            raise ValueError("Current password is incorrect.")
+                        client.auth.update_user({"password": new_password})
+                        # The new access/refresh tokens may have changed. Request
+                        # a fresh session using the NEW password.
+                        refreshed = client.auth.sign_in_with_password({
+                            "email": email, "password": new_password,
+                        })
+                        if not _set_auth(state, refreshed):
+                            raise RuntimeError("Password updated; sign in again.")
+                        state["swu_auth_name"] = name if name in ACCOUNT_NAMES else None
+                        st.success("Password changed successfully.")
+                    except Exception as exc:
+                        st.error(f"Password change failed: {exc}")
+        return
+
+    # Put the account radio to the LEFT and password field to the RIGHT.
+    with st.form("swu_named_login_form", clear_on_submit=True):
+        account_col, password_col = st.columns([1, 1.2], gap="large")
+        with account_col:
+            chosen = st.radio("Account", ACCOUNT_NAMES, key="swu_named_account")
+        with password_col:
+            password = st.text_input("Password", type="password")
+            sign_in = st.form_submit_button("Sign in", type="primary")
+    if sign_in:
+        email = emails.get(chosen)
+        if not email:
+            st.error("This account has not been configured yet. Ask the app administrator to set it up.")
+        elif not password:
+            st.error("Enter the account password.")
+        elif sum(1 for other in emails.values()
+                 if other and other.casefold() == email.casefold()) != 1:
+            st.error("Two account names point to the same email. Ask the administrator to fix the account mapping.")
+        else:
+            try:
+                client = make_client(
+                    st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_PUBLISHABLE_KEY"],
+                )
+                response = client.auth.sign_in_with_password({
+                    "email": email, "password": password,
+                })
+                if not _set_auth(state, response):
+                    raise RuntimeError("Sign-in could not be verified.")
+                # Protect against accidentally routing a different Auth user
+                # to this fixed friendly account name.
+                if str(response.user.email or "").casefold() != email.casefold():
+                    _clear_auth(state)
+                    raise RuntimeError("Account identity mismatch.")
+                state["swu_auth_name"] = chosen
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Sign-in failed: {exc}")
+
+
+def save_deck_to_account(st, make_client, snapshot):
+    """Upsert the current Twin Suns snapshot under the authenticated user's ID."""
+    if snapshot is None:
+        raise ValueError("There is no valid deck to save.")
+    snapshot = normalize_snapshot(snapshot)
+    client = _client_from_session(st, make_client)
+    if client is None:
+        raise RuntimeError("Sign in before saving a deck.")
+    user_id = st.session_state["swu_auth_user_id"]
+    client.table(SAVE_TABLE).upsert(
+        {
+            "user_id": user_id,
+            "name": snapshot["name"],
+            "format": FORMAT,
+            "deck_data": snapshot,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+        on_conflict="user_id,name",
+    ).execute()
+    st.session_state.pop("swu_decks_cache", None)
+
+
+def _saved_decks(st, make_client):
+    """Retrieve only this Supabase Auth user's own saves, with a brief TTL."""
+    state = st.session_state
+    user_id = state["swu_auth_user_id"]
+    cache = state.get("swu_decks_cache")
+    if (isinstance(cache, dict) and cache.get("user_id") == user_id
+            and time.monotonic() - cache.get("time", 0) < 20):
+        return cache["rows"]
+    client = _client_from_session(st, make_client)
+    if client is None:
+        raise RuntimeError("You must sign in to view saved decks.")
+    rows = (client.table(SAVE_TABLE)
+            .select("id,name,updated_at,deck_data")
+            .eq("user_id", user_id)
+            .order("updated_at", desc=True)
+            .limit(200)
+            .execute().data or [])
+    state["swu_decks_cache"] = {
+        "user_id": user_id, "time": time.monotonic(), "rows": rows,
+    }
+    return rows
+
+
+def render_all_decks(st, make_client):
+    """Account-owned decks and the collection progress included in each save."""
+    state = st.session_state
+    st.header("All Decks/Collections")
+    if not state.get("swu_auth_user_id"):
+        st.info("Sign in on **0. Sign in** to view and manage your saved decks.")
+        return
+    name = _current_account_name(state, _account_emails(st))
+    st.caption(f"Saved decks belonging to {name}. Other accounts' decks remain private.")
+    if st.button("Refresh saved decks", key="swu_decks_refresh"):
+        state.pop("swu_decks_cache", None)
+    try:
+        rows = _saved_decks(st, make_client)
+    except Exception as exc:
+        st.error(f"Couldn't load your decks: {exc}")
+        return
+    if not rows:
+        st.info("No saved decks yet. Create a deck in **4. Deck Builder** and save it there.")
+        return
+    by_id = {str(row["id"]): row for row in rows}
+    ids = list(by_id)
+    # A deleted deck may still be selected in the old selectbox widget state.
+    if state.get("swu_cloud_selected_deck") not in ids:
+        state.pop("swu_cloud_selected_deck", None)
+    selected_id = st.selectbox(
+        "Saved decks", ids,
+        format_func=lambda rid: by_id[rid]["name"],
+        key="swu_cloud_selected_deck",
+    )
+    chosen = by_id[selected_id]
+    modified = str(chosen.get("updated_at") or "")[:16].replace("T", " ")
+    st.caption(f"Last saved: {modified} UTC")
+    try:
+        snapshot = normalize_snapshot(chosen["deck_data"])
+        selections = required_cards(
+            snapshot["leaders"], snapshot["base"], snapshot["cards"],
+        )
+        totals = progress_totals(selections, snapshot["card_progress"])
+        st.write(f"**Leaders:** {', '.join(x['name'] for x in snapshot['leaders']) or 'None'}")
+        st.write(f"**Base:** {snapshot['base']['name'] if snapshot['base'] else 'None'}")
+        st.write(f"**Main deck:** {sum(x['count'] for x in snapshot['cards'])} cards")
+        st.write(
+            f"**Collection:** {totals['inDeck']} in physical deck · "
+            f"{totals['ownedElsewhere']} owned elsewhere · "
+            f"{totals['needToBuy']} still needed"
+        )
+    except (ValueError, TypeError, KeyError) as exc:
+        snapshot = None
+        st.warning(f"This save can't be loaded: {exc}")
+    left, right = st.columns(2)
+    with left:
+        if st.button("Load selected deck", key="swu_cloud_load", disabled=snapshot is None):
+            # Restore at the start of the next run before text input widgets.
+            state["swu_pending_deck_restore"] = snapshot
+            state["swu_navigate_to_deck"] = True
+            st.rerun()
+    with right:
+        if st.button("Delete selected deck", key="swu_delete_begin"):
+            state["swu_confirm_deck_delete"] = selected_id
+    if state.get("swu_confirm_deck_delete") == selected_id:
+        st.warning(f"Delete saved deck '{chosen['name']}' permanently?")
+        yes, no = st.columns(2)
+        with yes:
+            if st.button("Yes, delete", key="swu_delete_confirm"):
                 try:
-                    client.table(SAVE_TABLE).upsert(
-                        {"user_id": user_id, "name": snapshot["name"], "format": FORMAT,
-                         "deck_data": snapshot, "updated_at": datetime.now(timezone.utc).isoformat()},
-                        on_conflict="user_id,name",
+                    client = _client_from_session(st, make_client)
+                    client.table(SAVE_TABLE).delete().eq("id", selected_id).eq(
+                        "user_id", state["swu_auth_user_id"]
                     ).execute()
-                    st.success("Deck saved. Saving again under the same name updates it.")
+                    state.pop("swu_confirm_deck_delete", None)
+                    state.pop("swu_cloud_selected_deck", None)
+                    state.pop("swu_decks_cache", None)
                     st.rerun()
                 except Exception as exc:
-                    st.error(f"Save failed: {exc}")
-        if not rows:
-            st.caption("No saved decks yet.")
-            return
-        by_id = {str(row["id"]): row for row in rows}
-        selected_id = st.selectbox(
-            "Saved decks", list(by_id),
-            format_func=lambda rid: by_id[rid]["name"],
-            key="swu_cloud_selected_deck",
-        )
-        chosen = by_id[selected_id]
-        modified = str(chosen.get("updated_at") or "")[:16].replace("T", " ")
-        st.caption(f"Last saved: {modified} UTC")
-        left, right = st.columns(2)
-        with left:
-            if st.button("Load selected deck", key="swu_cloud_load", use_container_width=True):
-                try:
-                    data = normalize_snapshot(chosen["deck_data"])
-                    state["swu_pending_deck_restore"] = data
-                    st.rerun()
-                except ValueError as exc:
-                    st.error(f"Cannot load saved deck: {exc}")
-        with right:
-            if st.button("Delete selected deck", key="swu_delete_begin", use_container_width=True):
-                state["swu_confirm_deck_delete"] = selected_id
-        if state.get("swu_confirm_deck_delete") == selected_id:
-            st.warning(f"Delete saved deck '{chosen['name']}' permanently?")
-            yes, no = st.columns(2)
-            with yes:
-                if st.button("Yes, delete", key="swu_delete_confirm"):
-                    try:
-                        client.table(SAVE_TABLE).delete().eq("id", selected_id).eq("user_id", user_id).execute()
-                        state.pop("swu_confirm_deck_delete", None)
-                        state.pop("swu_cloud_selected_deck", None)
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Delete failed: {exc}")
-            with no:
-                if st.button("Cancel", key="swu_delete_cancel"):
-                    state.pop("swu_confirm_deck_delete", None)
-                    st.rerun()
+                    st.error(f"Delete failed: {exc}")
+        with no:
+            if st.button("Cancel", key="swu_delete_cancel"):
+                state.pop("swu_confirm_deck_delete", None)
+                st.rerun()

@@ -27,7 +27,7 @@ from swu_bases import (
     build_base_search_results,
     PRIMARY_BASE_ASPECTS,
 )
-from swu_deck_storage import render_deck_storage
+from swu_deck_storage import render_deck_storage, render_sign_in, render_all_decks
 from swu_twin_suns import (
     render_deck_builder, add_card, card_copy_limit, card_identity,
     deck_entries, get_selected_leaders, aspect_supply,
@@ -747,12 +747,21 @@ def add_twin_suns_card(card):
 st.title("Star Wars Unlimited Deck Builder")
 st.caption("Search cards, build decks, track your collection")
 
-leader_tab, base_tab, card_tab, deck_tab = st.tabs(
-    ["1. Leaders", "2. Bases", "3. Cards", "4. Deck Builder"],
+# When loading from All Decks/Collections, switch to Deck Builder on rerun.
+# This assignment must happen before st.tabs creates its keyed widget.
+if st.session_state.pop("swu_navigate_to_deck", False):
+    st.session_state["swu_active_main_tab"] = "4. Deck Builder"
+
+signin_tab, leader_tab, base_tab, card_tab, deck_tab, all_decks_tab = st.tabs(
+    ["0. Sign in", "1. Leaders", "2. Bases", "3. Cards",
+     "4. Deck Builder", "5. All Decks/Collections"],
     default="3. Cards",
     key="swu_active_main_tab",
     on_change="rerun",
 )
+
+with signin_tab:
+    render_sign_in(st, create_client)
 
 with leader_tab:
     st.header("Leader Library")
@@ -1874,3 +1883,6 @@ with deck_tab:
     render_deck_storage(st, create_client)
     st.divider()
     render_deck_builder(st)
+
+with all_decks_tab:
+    render_all_decks(st, create_client)
