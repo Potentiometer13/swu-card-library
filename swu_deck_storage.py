@@ -300,13 +300,35 @@ def render_deck_storage(st, make_client):
             st.success(state["swu_import_success"])
 
     with export_tab:
-        st.caption(
-            "Download SWUDB-compatible JSON, your official deck list, "
-            "a TCGplayer buylist, or a set-organized list of missing cards."
-        )
+        # Four compact export groups in ONE row. The first two are normal
+        # downloads, while buylist / set export place their small action button
+        # directly to the RIGHT of their radio options. Keep existing widget keys
+        # so selection is preserved across Streamlit reruns and deployments.
         stem = _deck_filename(deck_name).removesuffix(".json")
-        json_col, official_col = st.columns(2, gap="small")
+
+        # Both buylist modes include leaders, base, and main-deck quantities.
+        # All ignores ownership; Needed Only respects physical deck progress.
+        selections, progress = {}, {}
+        try:
+            selections = required_cards(
+                get_selected_leaders(state),
+                state.get("swu_selected_base"),
+                list((state.get("swu_twin_suns_cards") or {}).values()),
+            )
+            progress = normalize_progress_map(
+                state.get(PROGRESS_SESSION_KEY) or {}, selections
+            )
+        except ValueError as exc:
+            st.warning(f"Buylist export unavailable: {exc}")
+
+        # Widths favor the two option groups, particularly Rare/Legendary.
+        # No use_container_width=True: buttons are only as wide as their labels.
+        json_col, official_col, buy_col, set_col = st.columns(
+            [1.25, 1.8, 3.25, 4.4], gap="small", vertical_alignment="top",
+            width=1460,
+        )
         with json_col:
+            st.markdown("**Deck JSON**")
             if snapshot is not None:
                 try:
                     swudb_bytes = export_swudb(snapshot, author=author)
@@ -319,12 +341,13 @@ def render_deck_storage(st, make_client):
                         file_name=_deck_filename(deck_name),
                         mime="application/json",
                         key="swu_export_swudb",
-                        use_container_width=True,
+                        use_container_width=False,
                     )
             else:
-                st.button("Export Deck JSON", disabled=True, use_container_width=True)
+                st.button("Export Deck JSON", disabled=True, use_container_width=False)
 
         with official_col:
+            st.markdown("**Official Deck List**")
             if snapshot is not None:
                 try:
                     official_text = official_deck_list_text(snapshot)
@@ -339,7 +362,7 @@ def render_deck_storage(st, make_client):
                 file_name=stem + "_official_deck_list.txt",
                 mime="text/plain",
                 key="swu_export_official_deck_list",
-                use_container_width=True,
+                use_container_width=False,
                 disabled=not official_text,
                 help=(
                     "Plain-text deck roster: two leaders, base, main-deck total, "
@@ -347,36 +370,24 @@ def render_deck_storage(st, make_client):
                 ),
             )
 
-        # Both buylist modes include leaders, base, and main-deck quantities.
-        # The All mode ignores ownership; Needed Only respects card progress.
-        selections, progress = {}, {}
-        try:
-            selections = required_cards(
-                get_selected_leaders(state),
-                state.get("swu_selected_base"),
-                list((state.get("swu_twin_suns_cards") or {}).values()),
-            )
-            progress = normalize_progress_map(
-                state.get(PROGRESS_SESSION_KEY) or {}, selections
-            )
-        except ValueError as exc:
-            st.warning(f"Buylist export unavailable: {exc}")
-
-        st.divider()
-        buy_col, set_col = st.columns(2, gap="medium")
         with buy_col:
             st.markdown("**Export Buylist**")
-            buy_mode = st.radio(
-                "Buylist content",
-                ["All", "Needed Only"],
-                index=1,  # Preserve the old needed-only shopping-list default.
-                horizontal=True,
-                key="swu_buylist_export_mode",
-                help=(
-                    "All includes every required copy, even ones you own. "
-                    "Needed Only excludes copies already accounted for in the deck."
-                ),
+            buy_choices, buy_action = st.columns(
+                [3, 1], gap="small", vertical_alignment="center"
             )
+            with buy_choices:
+                buy_mode = st.radio(
+                    "Buylist content",
+                    ["All", "Needed Only"],
+                    index=1,
+                    horizontal=True,
+                    label_visibility="collapsed",
+                    key="swu_buylist_export_mode",
+                    help=(
+                        "All includes every required copy, even ones you own. "
+                        "Needed Only excludes copies already accounted for in the deck."
+                    ),
+                )
             try:
                 buy_text = tcgplayer_missing_text(
                     selections, progress, include_owned=(buy_mode == "All")
@@ -385,29 +396,35 @@ def render_deck_storage(st, make_client):
                 st.warning(f"Buylist export unavailable: {exc}")
                 buy_text = ""
             buy_suffix = "_buylist_all.txt" if buy_mode == "All" else "_buylist_needed.txt"
-            st.download_button(
-                "Export Buylist",
-                data=buy_text.encode("utf-8"),
-                file_name=stem + buy_suffix,
-                mime="text/plain",
-                key="swu_export_buylist",
-                use_container_width=True,
-                disabled=not buy_text,
-                help="TCGplayer Mass Entry format: quantity followed by card name.",
-            )
+            with buy_action:
+                st.download_button(
+                    "Export",
+                    data=buy_text.encode("utf-8"),
+                    file_name=stem + buy_suffix,
+                    mime="text/plain",
+                    key="swu_export_buylist",
+                    use_container_width=False,
+                    disabled=not buy_text,
+                    help="Export Buylist (TCGplayer Mass Entry format).",
+                )
 
         with set_col:
             st.markdown("**Export Needed by Set**")
-            set_mode = st.radio(
-                "Set-list content",
-                ["All", "Bulk Only", "Rare/Legendary"],
-                horizontal=True,
-                key="swu_set_export_mode",
-                help=(
-                    "All includes every missing card. Bulk Only excludes "
-                    "Rare/Legendary cards. Rare/Legendary includes only those rarities."
-                ),
+            set_choices, set_action = st.columns(
+                [4.3, 1], gap="small", vertical_alignment="center"
             )
+            with set_choices:
+                set_mode = st.radio(
+                    "Set-list content",
+                    ["All", "Bulk Only", "Rare/Legendary"],
+                    horizontal=True,
+                    label_visibility="collapsed",
+                    key="swu_set_export_mode",
+                    help=(
+                        "All includes every missing card. Bulk Only excludes "
+                        "Rare/Legendary cards. Rare/Legendary includes only those rarities."
+                    ),
+                )
             category = {
                 "All": "all", "Bulk Only": "bulk", "Rare/Legendary": "nonbulk"
             }[set_mode]
@@ -447,16 +464,17 @@ def render_deck_storage(st, make_client):
                     )
             except Exception as exc:
                 st.warning(f"Set-organized export unavailable: {exc}")
-            st.download_button(
-                "Export Needed by Set",
-                data=set_text.encode("utf-8"),
-                file_name=stem + suffix,
-                mime="text/plain",
-                key="swu_export_needed_by_set",
-                use_container_width=True,
-                disabled=not set_text,
-                help="Only missing copies. Reprints are listed without double-counting.",
-            )
+            with set_action:
+                st.download_button(
+                    "Export",
+                    data=set_text.encode("utf-8"),
+                    file_name=stem + suffix,
+                    mime="text/plain",
+                    key="swu_export_needed_by_set",
+                    use_container_width=False,
+                    disabled=not set_text,
+                    help="Export Needed by Set (only missing copies).",
+                )
         st.caption(
             "Set exports list missing quantities by expansion, with niche-set "
             "codes and ((reprint references)). Rare/Legendary is based on "
