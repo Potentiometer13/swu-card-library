@@ -28,6 +28,8 @@ from swu_bases import (
     PRIMARY_BASE_ASPECTS,
 )
 from swu_deck_storage import render_deck_storage, render_sign_in, render_all_decks
+from swu_inventory import owned_quantities, adjust_owned
+from swu_my_collection import render_my_collection
 from swu_twin_suns import (
     render_deck_builder, add_card, card_copy_limit, card_identity,
     deck_entries, get_selected_leaders, aspect_supply,
@@ -747,14 +749,16 @@ def add_twin_suns_card(card):
 st.title("Star Wars Unlimited Deck Builder")
 st.caption("Search cards, build decks, track your collection")
 
-# When loading from All Decks/Collections, switch to Deck Builder on rerun.
+# When loading from My Decks, switch to Deck Builder on rerun.
 # This assignment must happen before st.tabs creates its keyed widget.
 if st.session_state.pop("swu_navigate_to_deck", False):
     st.session_state["swu_active_main_tab"] = "4. Deck Builder"
+if st.session_state.get("swu_active_main_tab") == "5. All Decks/Collections":
+    st.session_state["swu_active_main_tab"] = "5. My Decks"
 
-signin_tab, leader_tab, base_tab, card_tab, deck_tab, all_decks_tab = st.tabs(
+signin_tab, leader_tab, base_tab, card_tab, deck_tab, my_decks_tab, collection_tab, all_decks_tab = st.tabs(
     ["0. Sign in", "1. Leaders", "2. Bases", "3. Cards",
-     "4. Deck Builder", "5. All Decks/Collections"],
+     "4. Deck Builder", "5. My Decks", "6. My Collection", "7. All Decks"],
     default="3. Cards",
     key="swu_active_main_tab",
     on_change="rerun",
@@ -1267,6 +1271,27 @@ with base_tab:
 
 with card_tab:
     st.header("Card Search")
+    collection_owned = {}
+    collection_readable = True
+    if st.session_state.get("swu_auth_user_id"):
+        try:
+            collection_owned = owned_quantities(st, create_client)
+        except Exception as error:
+            collection_readable = False
+            st.warning(f"Collection is unavailable. Run the collection SQL setup: {error}")
+    st.markdown("""<style>
+      [class*="st-key-swu_inv_minus_"] button,
+      [class*="st-key-swu_inv_plus_"] button {
+        min-height: 1.25rem !important;
+        height: 1.25rem !important;
+        padding: 0 1px !important;
+        font-size: 0.7rem !important;
+      }
+      [class*="st-key-swu_inv_minus_"] button p,
+      [class*="st-key-swu_inv_plus_"] button p {
+        font-size: 0.68rem !important;
+      }
+    </style>""", unsafe_allow_html=True)
 
     # Refresh aspect buttons when selected leaders/base change.
     sync_card_aspects_from_deck()
@@ -1856,12 +1881,50 @@ with card_tab:
                             ).get("count", 0)
                             limit = card_copy_limit(deck_card)
                             can_add = limit is None or deck_count < limit
-                            st.button(
-                                "Add to Deck" if can_add else "✓ In Deck",
-                                key=f"swu_twin_suns_add_{group_id}",
-                                on_click=add_twin_suns_card, args=(deck_card,),
-                                use_container_width=True,
-                                disabled=not can_add,
+                            # Stay inside the existing card width. Nest only
+                            # once under the four-column gallery (Streamlit safe).
+                            action_deck, decrement, increment = st.columns(
+                                [4, 0.5, 0.5], gap="xxsmall", vertical_alignment="center"
+                            )
+                            with action_deck:
+                                st.button(
+                                    "Add to Deck" if can_add else "✓ In Deck",
+                                    key=f"swu_twin_suns_add_{group_id}",
+                                    on_click=add_twin_suns_card, args=(deck_card,),
+                                    use_container_width=True,
+                                    disabled=not can_add,
+                                )
+                            logged_in = bool(st.session_state.get("swu_auth_user_id"))
+                            with decrement:
+                                if st.button(
+                                    "−", key=f"swu_inv_minus_{group_id}",
+                                    help=f"Remove one owned copy (current: {collection_owned.get(group_id, 0)})",
+                                    disabled=(not logged_in or not collection_readable
+                                              or collection_owned.get(group_id, 0) == 0),
+                                    use_container_width=True,
+                                ):
+                                    try:
+                                        adjust_owned(st, create_client, group_id, -1)
+                                        st.rerun()
+                                    except Exception as error:
+                                        st.error(f"Collection update failed: {error}")
+                            with increment:
+                                if st.button(
+                                    "+", key=f"swu_inv_plus_{group_id}",
+                                    help=f"Add one to collection (current: {collection_owned.get(group_id, 0)})",
+                                    disabled=not logged_in or not collection_readable,
+                                    use_container_width=True,
+                                ):
+                                    try:
+                                        adjust_owned(st, create_client, group_id, 1)
+                                        st.rerun()
+                                    except Exception as error:
+                                        st.error(f"Collection update failed: {error}")
+                            st.markdown(
+                                f'<div style="text-align:right;font-size:0.64rem;'
+                                f'line-height:0.85rem;margin-top:-0.8rem">'
+                                f'Add to collection · Owned: {collection_owned.get(group_id, 0)}'
+                                f'</div>', unsafe_allow_html=True,
                             )
 
                     st.divider()
@@ -1884,5 +1947,14 @@ with deck_tab:
     st.divider()
     render_deck_builder(st)
 
-with all_decks_tab:
+with my_decks_tab:
     render_all_decks(st, create_client)
+
+with collection_tab:
+    render_my_collection(st, create_client, get_database(), get_filter_options)
+
+with all_decks_tab:
+    st.header("All Decks")
+    st.info("Public/shared decks will go here. Existing account decks remain "
+            "private until you choose a sharing model; no permission changes "
+            "have been made.")

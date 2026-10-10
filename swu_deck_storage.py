@@ -195,7 +195,8 @@ def _client_from_session(st, make_client):
 def _clear_auth(state):
     for key in ("swu_auth_access", "swu_auth_refresh", "swu_auth_user_id",
                 "swu_auth_email", "swu_auth_name", "swu_decks_cache",
-                "swu_confirm_deck_delete", "swu_cloud_selected_deck"):
+                "swu_confirm_deck_delete", "swu_cloud_selected_deck",
+                "swu_owned_cache"):
         state.pop(key, None)
 
 
@@ -443,7 +444,7 @@ def render_deck_storage(st, make_client):
         notice = state.pop("swu_save_notice", None)
         if notice:
             st.success(notice)
-        st.caption("Browse, load, or delete saved decks in **5. All Decks/Collections**.")
+        st.caption("Browse, load, or delete saved decks in **5. My Decks**.")
 
 
 def _account_emails(st):
@@ -620,9 +621,9 @@ def _saved_decks(st, make_client):
 
 
 def render_all_decks(st, make_client):
-    """Account-owned decks and the collection progress included in each save."""
+    """Account-owned decks, with physical progress from each save."""
     state = st.session_state
-    st.header("All Decks/Collections")
+    st.header("My Decks")
     if not state.get("swu_auth_user_id"):
         st.info("Sign in on **0. Sign in** to view and manage your saved decks.")
         return

@@ -165,7 +165,7 @@ def show_printing_dialog(card, printings):
             st.info("Image unavailable")
 
 
-def show_grouped_card(card, printing_options):
+def show_grouped_card(card, printing_options, key_prefix="swu_gallery", show_printing_id=True):
     """Draw a clickable gallery card; printings appear only in its dialog.
 
     A native st.button is styled with the card image as its background, so a
@@ -188,7 +188,7 @@ def show_grouped_card(card, printing_options):
     # Streamlit adds this key as a class to the button container.
     # Keep keys CSS-safe even if the API uses non-UUID identifiers.
     safe_id = re.sub(r"[^a-zA-Z0-9_-]", "_", str(card["uuid"]))
-    button_key = f"swu_gallery_card_{safe_id}"
+    button_key = f"{key_prefix}_card_{safe_id}"
 
     if image.startswith(("https://", "http://")):
         selector = f".st-key-{button_key} button"
@@ -230,8 +230,9 @@ def show_grouped_card(card, printing_options):
     ):
         show_printing_dialog(card, variants)
 
-    st.markdown(
-        '<p style="text-align:center; font-weight:600; margin:0.25rem 0">'
-        + escape(printing_id(chosen)) + '</p>',
-        unsafe_allow_html=True,
-    )
+    if show_printing_id:
+        st.markdown(
+            '<p style="text-align:center; font-weight:600; margin:0.25rem 0">'
+            + escape(printing_id(chosen)) + '</p>',
+            unsafe_allow_html=True,
+        )
