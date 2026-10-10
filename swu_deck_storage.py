@@ -215,6 +215,24 @@ def _deck_filename(name):
     return (cleaned or "twin_suns_deck") + ".json"
 
 
+def added_cards_for_collection(session):
+    """Copies physically marked Added in this deck, keyed by gameplay ID.
+
+    Includes the leaders/base if their own In-deck trackers are checked.
+    Excludes cards merely present in the digital deck list.
+    """
+    selections = required_cards(
+        get_selected_leaders(session), session.get("swu_selected_base"),
+        list((session.get("swu_twin_suns_cards") or {}).values()),
+    )
+    progress = normalize_progress_map(session.get(PROGRESS_SESSION_KEY) or {}, selections)
+    return {
+        gid: record["inDeck"]
+        for gid, (_, quantity) in selections.items()
+        if (record := progress.get(gid, {"inDeck": 0}))["inDeck"] > 0
+    }
+
+
 def render_deck_storage(st, make_client):
     """A standalone Streamlit UI; call before render_deck_builder(st)."""
     state = st.session_state
@@ -264,8 +282,10 @@ def render_deck_storage(st, make_client):
             state["swu_pending_deck_restore"] = resolved
             state["swu_import_success"] = f"Imported '{parsed['name']}' successfully."
 
-    # Separate the upload workflow from the three download formats.
-    import_tab, export_tab = st.tabs(["Import", "Export"])
+    # Import/export and collection transfer are separate deck operations.
+    import_tab, export_tab, modify_collection_tab = st.tabs(
+        ["Import", "Export", "Modify Collection"]
+    )
     with import_tab:
         st.file_uploader(
             "Upload JSON",
@@ -424,6 +444,63 @@ def render_deck_storage(st, make_client):
             "Rare/Legendary. All Needed: both combined. Lists use set sections, "
             "niche-set codes and ((repeat references)) without counting extra copies."
         )
+    with modify_collection_tab:
+        st.write("**Modify your account's collection using this deck**")
+        st.caption(
+            "Only copies marked **Added** (physically in this deck) are transferred. "
+            "That includes leaders and your base if marked In deck. "
+            "Unmarked deck-list cards are ignored."
+        )
+        transfer = st.radio(
+            "Collection action",
+            ["Add to collection", "Remove from collection"],
+            horizontal=True, key="swu_bulk_inventory_action",
+        )
+        if transfer == "Add to collection":
+            st.write(
+                "**Add to collection** increases your account's Owned quantities "
+                "for every marked copy in this deck."
+            )
+        else:
+            st.write(
+                "**Remove from collection** subtracts those marked copies from "
+                "your account's Owned quantities—for example, when giving "
+                "away this physical deck. The transfer is canceled if you "
+                "don't own enough of any card."
+            )
+        changes = added_cards_for_collection(state)
+        copy_count = sum(changes.values())
+        st.caption(f"Marked cards: {copy_count} copies across {len(changes)} unique cards.")
+        if not state.get("swu_auth_user_id"):
+            st.info("Sign in on **0. Sign in** to modify your collection.")
+        elif not changes:
+            st.info("Mark cards as Added in the Deck section first.")
+        else:
+            st.caption(
+                "Each successful transfer changes Owned quantities once. "
+                "Clicking Apply again repeats the transfer. The deck's "
+                "Added statuses are not changed, and saved decks are not "
+                "automatically resaved."
+            )
+        apply_changes = st.button(
+            "Apply to collection", key="swu_apply_deck_inventory",
+            type="primary", disabled=not changes or not state.get("swu_auth_user_id"),
+        )
+        if apply_changes:
+            try:
+                from swu_inventory import adjust_owned_bulk
+                signed = {gid: n if transfer == "Add to collection" else -n
+                          for gid, n in changes.items()}
+                adjust_owned_bulk(st, make_client, signed)
+                action_word = "Added" if transfer == "Add to collection" else "Removed"
+                st.success(
+                    f"{action_word} {copy_count} copies across "
+                    f"{len(changes)} card types "
+                    f"{'to' if transfer == 'Add to collection' else 'from'} "
+                    "your collection."
+                )
+            except Exception as exc:
+                st.error(f"Collection transfer failed; no cards were changed: {exc}")
     st.divider()
     st.subheader("Save deck online")
     if not state.get("swu_auth_user_id"):

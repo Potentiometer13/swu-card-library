@@ -283,6 +283,32 @@ def toggle_deck_card_status(session, gid, quantity):
     _sync_progress_widget_values(session, gid, quantity)
 
 
+def set_all_draw_deck_status(session, mark_added):
+    """Mark all draw-deck copies Added or Not Added, without changing inventory.
+
+    Leaders and base have their own progress controls and are deliberately
+    excluded. Uses the same progress transition as a single status button.
+    """
+    updated = 0
+    for gid, entry in deck_entries(session).items():
+        quantity = int(entry["count"])
+        previous = get_progress(session, gid, quantity)
+        desired = quantity if mark_added else 0
+        if previous["inDeck"] != desired or previous["ownedElsewhere"]:
+            set_progress(
+                session, gid, quantity, in_deck=desired,
+                owned_elsewhere=0, changed="inDeck",
+            )
+            _sync_progress_widget_values(session, gid, quantity)
+            updated += 1
+    session["swu_bulk_added_notice"] = (
+        f"{'Added' if mark_added else 'Removed'} status updated for "
+        f"{updated} card type{'s' if updated != 1 else ''}. "
+        "Save your deck online to keep these changes."
+    )
+    return updated
+
+
 def bulk_needed_candidates(required, progress):
     """Missing cards except those explicitly listed as Rare or Legendary.
 
@@ -855,10 +881,45 @@ def render_deck_builder(st):
                         font-size: 0.69rem !important;
                         font-weight: 600 !important;
                     }
+                    /* Bulk controls need full-width labels, unlike row toggles. */
+                    .st-key-swu_compact_deck_list [class*="st-key-swu_deck_add_all"] button,
+                    .st-key-swu_compact_deck_list [class*="st-key-swu_deck_remove_all"] button {
+                        width: 100% !important;
+                        min-width: 0 !important;
+                        padding: 0 0.08rem !important;
+                        font-size: 0.66rem !important;
+                        white-space: nowrap !important;
+                    }
                     </style>
                     """, unsafe_allow_html=True)
 
                     with st.container(key="swu_compact_deck_list"):
+                        if filter_choice == "All cards":
+                            # The Added column itself is deliberately narrow.
+                            # Put the two short bulk buttons just above its
+                            # header, spanning the right side of the table.
+                            space, bulk_actions = st.columns([4.9, 1.55], gap="xxsmall")
+                            with bulk_actions:
+                                add_bulk, remove_bulk = st.columns(2, gap="xxsmall")
+                                with add_bulk:
+                                    st.button(
+                                        "Add all", key="swu_deck_add_all",
+                                        on_click=set_all_draw_deck_status,
+                                        args=(session, True),
+                                        help="Mark every draw-deck card as Added. Does not change My Collection.",
+                                        use_container_width=True,
+                                    )
+                                with remove_bulk:
+                                    st.button(
+                                        "Remove all", key="swu_deck_remove_all",
+                                        on_click=set_all_draw_deck_status,
+                                        args=(session, False),
+                                        help="Mark every draw-deck card as Not Added. Does not change My Collection.",
+                                        use_container_width=True,
+                                    )
+                            bulk_notice = session.pop("swu_bulk_added_notice", None)
+                            if bulk_notice:
+                                st.caption(bulk_notice)
                         # Qty | Name | Aspects | Cost | Added | Remove
                         widths = [0.42, 3.65, 0.88, 0.47, 0.47, 0.60]
                         headings = ("Qty", "Card name", "Aspects", "Cost", "Added", "Remove")

@@ -75,6 +75,32 @@ def adjust_owned(st, make_client, gameplay_id, delta):
     return count
 
 
+def adjust_owned_bulk(st, make_client, changes):
+    """Atomically change many card quantities with one authenticated RPC.
+
+    Signed changes are absolute numbers of copies to add or remove. The
+    database aborts the entire transaction if any removal lacks inventory.
+    """
+    if not isinstance(changes, dict) or not changes or len(changes) > 600:
+        raise ValueError("Choose 1–600 card types to transfer.")
+    verified = {}
+    for gameplay_id, delta in changes.items():
+        gid = str(gameplay_id or "")
+        if not gid or len(gid) > 128 or type(delta) is not int or not 1 <= abs(delta) <= 1000:
+            raise ValueError("Invalid card ID or transfer quantity (limit: 1000 per card).")
+        verified[gid] = delta
+    client = _client_from_session(st, make_client)
+    if client is None:
+        raise ValueError("Sign in to edit your collection.")
+    result = client.rpc("swu_adjust_owned_cards_bulk", {
+        "p_changes": verified,
+    }).execute()
+    # Any SQL error aborts the entire transaction; invalidate cached totals
+    # only after the server reports success.
+    st.session_state.pop("swu_owned_cache", None)
+    return result.data
+
+
 def cards_in_saved_decks(st, make_client):
     """Count copies explicitly marked in physical decks across saved decks.
 
