@@ -35,7 +35,7 @@ MIN_PASSWORD_LENGTH = 6  # Supabase Auth hosted projects reject shorter password
 REMEMBER_COOKIE = "swu_remember_v1"
 REMEMBER_DAYS = 30
 FIELDS = (
-    "uuid", "gameplay_id", "name", "subtitle", "set_code",
+    "price_selection", "uuid", "gameplay_id", "name", "subtitle", "set_code",
     "collector_number", "variant_type", "front_image_url", "back_image_url",
     "aspects", "traits", "keywords", "card_type", "arena", "cost", "power",
     "hp", "rarity", "rules_text",
@@ -63,6 +63,8 @@ def _safe_card(value):
                 card[key] = None
         else:
             card[key] = str(item or "")[:10000 if key == "rules_text" else 512]
+    # Imported/older snapshots specify a printing: preserve that explicit choice.
+    card["price_selection"] = "auto" if value.get("price_selection") == "auto" else "manual"
     for key in ("front_image_url", "back_image_url"):
         if card[key] and not card[key].startswith("https://"):
             card[key] = ""
@@ -189,8 +191,10 @@ def restore_snapshot(session, snapshot):
     # Remove old progress widget values so importing another deck displays
     # its values, instead of retaining the prior deck's toggles.
     for key in list(session):
-        if key.startswith(("swu_progress_in_", "swu_progress_owned_")):
+        if key.startswith(("swu_progress_in_", "swu_progress_owned_",
+                           "swu_printing_choice_", "swu_printing_manual_", "swu_printing_options_")):
             session.pop(key, None)
+    session.pop("swu_deck_printing_options", None)
     # Refresh leader-dependent defaults in the Bases filter; don't touch
     # card search filters or user layout preferences.
     for key in ("swu_base_last_leader_signature", "swu_base_last_leader_ids"):

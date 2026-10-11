@@ -125,6 +125,16 @@ def printing_label(card):
     return f"{printing_id(card)} · {card.get('variant_type') or 'Other printing'}"
 
 
+def _printing_changed(group_id):
+    st.session_state[f"swu_printing_manual_{group_id}"] = True
+    chosen_id = st.session_state.get(f"swu_printing_choice_{group_id}")
+    choices = st.session_state.get(f"swu_printing_options_{group_id}") or []
+    chosen = next((p for p in choices if str(p["uuid"]) == chosen_id), None)
+    if chosen:
+        from swu_price_ui import apply_printing
+        apply_printing(st.session_state, group_id, chosen, "manual")
+
+
 @st.dialog("Card printings", width="large", on_dismiss="rerun")
 def show_printing_dialog(card, printings):
     """Open a detail window; printing selection stays out of the gallery."""
@@ -132,6 +142,7 @@ def show_printing_dialog(card, printings):
     group_id = str(card.get("gameplay_id") or card["uuid"])
     widget_key = f"swu_printing_choice_{group_id}"
     by_id = {str(p["uuid"]): p for p in variants}
+    st.session_state[f"swu_printing_options_{group_id}"] = variants
 
     if st.session_state.get(widget_key) not in by_id:
         preferred = str(card["uuid"])
@@ -153,9 +164,11 @@ def show_printing_dialog(card, printings):
             options=list(by_id),
             format_func=lambda uid: printing_label(by_id[uid]),
             key=widget_key,
+            on_change=_printing_changed, args=(group_id,),
         )
         chosen = by_id[st.session_state[widget_key]]
-        st.caption(f"{len(variants)} available printing(s)")
+        from swu_prices import price_text
+        st.caption(f"{len(variants)} available printing(s) · {price_text(chosen)} per copy (USD)")
         st.markdown(f"**Card ID:** {escape(printing_id(chosen))}")
 
     with image_column:
@@ -176,6 +189,14 @@ def show_grouped_card(card, printing_options, key_prefix="swu_gallery", show_pri
     widget_key = f"swu_printing_choice_{group_id}"
     by_id = {str(p["uuid"]): p for p in variants}
 
+    if not st.session_state.get(f"swu_printing_manual_{group_id}"):
+        if card.get("price_selection") == "manual":
+            st.session_state[widget_key] = str(card["uuid"])
+        else:
+            from swu_prices import cheapest_printing
+            cheapest = cheapest_printing(variants)
+            if cheapest:
+                st.session_state[widget_key] = str(cheapest["uuid"])
     if st.session_state.get(widget_key) not in by_id:
         preferred = str(card["uuid"])
         st.session_state[widget_key] = (

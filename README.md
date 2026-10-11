@@ -48,6 +48,7 @@ python test_collection_progress.py
 python test_official_deck_list.py
 python test_simplified_bases.py
 python test_saved_decks.py
+python test_prices.py
 python -m compileall -q app.py swu_*.py import_cards.py test_*.py
 ```
 
@@ -83,3 +84,36 @@ These database guarantees require separate inspection and live tests.
 `api.swuapi.com` and `api.swu-db.com`. It upserts card sets, printings, and
 `card_double_aspect_overrides`. It is a database write operation, not a development
 smoke test; do not run it against production without explicit approval.
+
+## TCGCSV prices and printing selection
+
+The deck and sideboard tables show **Price** after Remove: TCGplayer USD market price
+per copy, supplied by [TCGCSV](https://tcgcsv.com/docs). This is a market estimate,
+not an average of listings or a guaranteed purchase price; shipping is excluded.
+
+New cards default to the cheapest quoted printing available in the application's
+printing catalog. Click a card image in the Cards or Deck Builder gallery to select
+a specific printing. Explicit choices persist through native saves and moves between
+main deck and sideboard. Imported/older decks preserve their specified printings.
+Each deck-zone row uses one selected printing for all its copies. A manual gallery
+selection updates that card's printing in both zones, without changing quantities.
+
+`swu_prices.py` syncs public Star Wars Unlimited category 79 products and prices to
+an ignored `.cache/tcgcsv-prices.json` file. No API key or database migration is needed.
+The server initializes this cache on first use; it can also be populated before startup:
+
+```sh
+python swu_prices.py
+```
+
+The cache is refreshed at most daily, checking `last-updated.txt` first, identifying
+requests as `SWU-Card-Library/1.0`, and spacing them by 100 ms as required by TCGCSV.
+Keep the cache directory writable. Allow HTTPS access to `tcgcsv.com` in restricted
+cloud environments. Only the backend fetches prices; the browser reads cached data.
+Existing quotes remain available after a refresh failure. A dash means no exact
+match/quote; unpriced printings are excluded from cheapest-price comparisons.
+
+Matching uses set abbreviation, collector number, full card title, and Normal/Foil
+finish. Unmatched promotional set codes are left unpriced rather than guessed.
+`test_prices.py` includes an isolated Streamlit test of the price column and manual
+printing selection, with mocked database/catalog data; it does not test Supabase.
