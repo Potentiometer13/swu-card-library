@@ -863,18 +863,27 @@ def _deck_stats_bar(label, quantity, total):
     )
 
 
-def _render_deck_right_panel(st, session, entries):
-    """Visual gallery or copy-weighted main-deck statistics; no DB calls."""
+def _render_deck_right_panel(st, session, entries, filter_choice="All cards"):
+    """Visual gallery obeys the shared Show cards filter; statistics are full main deck."""
     view = st.radio(
         "View", ("Card Images", "Statistics"),
         horizontal=True, key="swu_deck_right_view",
     )
     if view == "Card Images":
-        cards = _gallery_cards(entries, sideboard_entries(session))
+        main_visible = {
+            gid: entry for gid, entry in entries.items()
+            if _matches_progress_filter(session, gid, entry, filter_choice, "main")
+        }
+        side_visible = {
+            gid: entry for gid, entry in sideboard_entries(session).items()
+            if _matches_progress_filter(session, gid, entry, filter_choice, "sideboard")
+        }
+        cards = _gallery_cards(main_visible, side_visible)
         images = [(_safe_card_image_url(card), display_card_name(card)) for card in cards]
         images = [(url, name) for url, name in images if url]
         if not images:
-            st.info("Add cards to see their images here.")
+            st.info("No card images match this filter." if (entries or sideboard_entries(session))
+                    else "Add cards to see their images here.")
             return
         tiles = "".join(
             '<div class="swu-panel-art-tile">'
@@ -922,6 +931,28 @@ def _render_deck_right_panel(st, session, entries):
         unsafe_allow_html=True,
     )
 
+def _matches_progress_filter(session, gid, entry, filter_choice, zone="main"):
+    """Identical eligibility for main/sideboard list rows and right-hand gallery.
+
+    Progress is zone-specific; a main-deck copy may be Added while the same
+    gameplay card still needs a physical sideboard copy.
+    """
+    quantity = int(entry["count"])
+    if filter_choice == "All cards":
+        return True
+    if zone == "main":
+        record = get_progress(session, gid, quantity)
+    elif zone == "sideboard":
+        record = _zone_progress(session, "sideboard", gid, quantity)
+    else:
+        raise ValueError("Unknown deck zone")
+    if filter_choice == "Need to buy":
+        return bool(needs_to_buy(quantity, record))
+    if filter_choice == "Not yet in physical deck":
+        return record["inDeck"] < quantity
+    raise ValueError("Unknown Show cards filter")
+
+
 def grouped_deck_rows(entries, session, filter_choice):
     """Pure grouping and sorting logic; leaves collection progress unmodified."""
     section_order = (
@@ -932,10 +963,7 @@ def grouped_deck_rows(entries, session, filter_choice):
     for gid, entry in entries.items():
         card = entry["card"]
         quantity = int(entry["count"])
-        record = get_progress(session, gid, quantity)
-        if filter_choice == "Need to buy" and not needs_to_buy(quantity, record):
-            continue
-        if filter_choice == "Not yet in physical deck" and record["inDeck"] >= quantity:
+        if not _matches_progress_filter(session, gid, entry, filter_choice, "main"):
             continue
         rows[_deck_section(card)].append((gid, entry))
     for label in section_order:
@@ -1144,9 +1172,21 @@ def render_deck_builder(st):
         # Hover artwork sits over the deck list without expanding row height.
         st.markdown("""
         <style>
+        .st-key-swu_compact_deck_list [data-testid="stHorizontalBlock"],
+        .st-key-swu_compact_sideboard_list [data-testid="stHorizontalBlock"] {
+            min-width:0 !important;
+            overflow:visible !important;
+        }
         .st-key-swu_compact_deck_list [data-testid="stColumn"],
-        .st-key-swu_compact_sideboard_list [data-testid="stColumn"] {
-            overflow: visible !important;
+        .st-key-swu_compact_sideboard_list [data-testid="stColumn"],
+        .st-key-swu_compact_deck_list [data-testid="stElementContainer"],
+        .st-key-swu_compact_sideboard_list [data-testid="stElementContainer"] {
+            min-width:0 !important;
+            overflow:visible !important;
+        }
+        .st-key-swu_compact_deck_list [data-testid="stMarkdownContainer"],
+        .st-key-swu_compact_sideboard_list [data-testid="stMarkdownContainer"] {
+            min-width:0 !important;
         }
         .st-key-swu_compact_deck_list [data-testid="stHorizontalBlock"]:has(.swu-deck-name-hover:hover),
         .st-key-swu_compact_sideboard_list [data-testid="stHorizontalBlock"]:has(.swu-deck-name-hover:hover) {
@@ -1157,13 +1197,20 @@ def render_deck_builder(st):
             line-height:1.14rem;}
         .swu-deck-name-text {display:block;overflow:hidden;text-overflow:ellipsis;
             white-space:nowrap;}
+        /* Fixed-position previews escape the horizontal scroll clipping of
+           Streamlit's non-wrapping row containers. They do not change row height. */
         .swu-deck-art-preview {display:block;visibility:hidden;opacity:0;
-            position:absolute;top:-0.5rem;left:calc(100% + 0.5rem);
-            width:220px;max-width:60vw;z-index:10000;pointer-events:none;
+            position:fixed;top:12vh;right:1.25rem;
+            left:auto;width:clamp(180px,22vw,310px);max-width:55vw;
+            max-height:78vh;z-index:999999;pointer-events:none;
             background:var(--background-color,#fff);border-radius:0.45rem;
-            box-shadow:0 5px 28px rgba(0,0,0,.40);padding:0.25rem;}
+            box-shadow:0 6px 30px rgba(0,0,0,.45);padding:0.3rem;
+            box-sizing:border-box;overflow:visible;}
         .swu-deck-art-preview img {display:block;width:100%;height:auto;
-            max-height:74vh;object-fit:contain;border-radius:0.25rem;}
+            max-height:calc(78vh - 0.6rem);object-fit:contain;border-radius:0.25rem;}
+        @media (max-width: 700px) {
+            .swu-deck-art-preview {top:15vh;right:0.5rem;width:190px;max-width:60vw;}
+        }
         .swu-deck-name-hover:hover .swu-deck-art-preview,
         .swu-deck-name-hover:focus .swu-deck-art-preview,
         .swu-deck-name-hover:focus-within .swu-deck-art-preview {
@@ -1171,15 +1218,17 @@ def render_deck_builder(st):
         }
         </style>""", unsafe_allow_html=True)
 
-        deck_left, deck_right = st.columns([2, 3], gap="medium")
+        st.subheader("Deck")
+        # One selector controls the main/sideboard rows and the artwork panel.
+        # It is intentionally placed above the two-column layout.
+        filter_choice = st.selectbox(
+            "Show cards",
+            ["All cards", "Need to buy", "Not yet in physical deck"],
+            key="swu_deck_progress_filter",
+        )
+        deck_left, deck_right = st.columns([2.4, 2.6], gap="medium")
 
         with deck_left:
-            st.subheader("Deck")
-            filter_choice = st.selectbox(
-                "Show cards",
-                ["All cards", "Need to buy", "Not yet in physical deck"],
-                key="swu_deck_progress_filter",
-            )
             if not entries:
                 st.info("No cards added yet.")
             else:
@@ -1191,9 +1240,15 @@ def render_deck_builder(st):
                     st.markdown("""
                     <style>
                     .st-key-swu_compact_deck_list [data-testid="stHorizontalBlock"] {
-                        gap: 0.24rem !important;
+                        gap: 0.18rem !important;
                         align-items: center !important;
                         min-height: 1.48rem !important;
+                        overflow-x: visible !important;
+                        overflow-y: visible !important;
+                        min-width: 0 !important;
+                    }
+                    .st-key-swu_compact_deck_list [data-testid="stColumn"] {
+                        min-width: 0 !important;
                     }
                     .st-key-swu_compact_deck_list [data-testid="stVerticalBlock"] {
                         gap: 0.02rem !important;
@@ -1362,14 +1417,29 @@ def render_deck_builder(st):
                                         # Ensure the draw-deck total at the top refreshes.
                                         st.rerun()
 
-            side_rows = sideboard_entries(session)
-            st.markdown(f"**Sideboard** · {sum(int(e['count']) for e in side_rows.values())} cards")
+            all_side_rows = sideboard_entries(session)
+            side_rows = {
+                gid: entry for gid, entry in all_side_rows.items()
+                if _matches_progress_filter(session, gid, entry, filter_choice, "sideboard")
+            }
+            total_side_copies = sum(int(e["count"]) for e in all_side_rows.values())
+            visible_side_copies = sum(int(e["count"]) for e in side_rows.values())
+            side_heading = f"**Sideboard** · {total_side_copies} cards"
+            if filter_choice != "All cards":
+                side_heading += f" ({visible_side_copies} shown)"
+            st.markdown(side_heading)
             if side_rows:
                 st.caption("Move copies back to the main deck or remove them entirely.")
                 with st.container(key="swu_compact_sideboard_list"):
                     st.markdown("""
                     <style>
-                    .st-key-swu_compact_sideboard_list [data-testid="stHorizontalBlock"] { gap:0.24rem !important; min-height:1.45rem !important; }
+                    .st-key-swu_compact_sideboard_list [data-testid="stHorizontalBlock"] {
+                        gap:0.18rem !important; min-height:1.45rem !important;
+                        min-width:0 !important; overflow:visible !important;
+                    }
+                    .st-key-swu_compact_sideboard_list [data-testid="stColumn"] {
+                        min-width:0 !important;
+                    }
                     .st-key-swu_compact_sideboard_list [data-testid="stVerticalBlock"] { gap:0.03rem !important; }
                     .st-key-swu_compact_sideboard_list [data-testid="stMarkdownContainer"] p { margin:0 !important; line-height:1.07rem !important; }
                     .st-key-swu_compact_sideboard_list button { min-height:1.38rem !important; height:1.38rem !important; padding:0 0.2rem !important; font-size:0.69rem !important; }
@@ -1411,9 +1481,10 @@ def render_deck_builder(st):
                                 remove_sideboard_card(session, gid)
                                 st.rerun()
             else:
-                st.caption("No cards in sideboard.")
+                st.caption("No sideboard cards match this filter." if all_side_rows
+                           else "No cards in sideboard.")
 
         with deck_right:
-            _render_deck_right_panel(st, session, entries)
+            _render_deck_right_panel(st, session, entries, filter_choice)
 
     render_collection_and_compact_deck()
