@@ -4,7 +4,9 @@ No service-role keys. Read/write uses a dedicated per-session Supabase Auth
 client; row-level security isolates each person's decks.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+import base64
+import hashlib
 import time
 import json
 import re
@@ -30,6 +32,8 @@ MAX_QUANTITY = 1000
 MAX_NAME_LENGTH = 80
 ACCOUNT_NAMES = ("Josh", "Nick", "Account 3", "Account 4", "Account 5", "Account 6")
 MIN_PASSWORD_LENGTH = 6  # Supabase Auth hosted projects reject shorter passwords.
+REMEMBER_COOKIE = "swu_remember_v1"
+REMEMBER_DAYS = 30
 FIELDS = (
     "uuid", "gameplay_id", "name", "subtitle", "set_code",
     "collector_number", "variant_type", "front_image_url", "back_image_url",
@@ -246,20 +250,136 @@ def upload_snapshot(raw):
     return normalize_snapshot(data)
 
 
+def _remember_cipher(st):
+    """Encrypt tokens before placing them in browser storage.
+
+    The secret is a private Streamlit deployment secret, never sent to the
+    browser. A missing secret disables remembering without breaking login.
+    """
+    from cryptography.fernet import Fernet
+
+    secret = str(st.secrets.get("SWU_REMEMBER_SECRET", ""))
+    if len(secret) < 32:
+        return None
+    key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode("utf-8")).digest())
+    return Fernet(key)
+
+
+def _remember_controller():
+    # Lazily imported so ordinary sign-in still functions before deployment
+    # requirements have been updated.
+    from streamlit_cookies_controller import CookieController
+    return CookieController(key="swu_remember_browser_component")
+
+
+def _forget_remembered(st, controller=None):
+    """Remove the persistent credential only on this browser."""
+    st.session_state.pop("swu_remember_until", None)
+    st.session_state["swu_remember_browser"] = False
+    try:
+        controller = controller or _remember_controller()
+        if controller.get(REMEMBER_COOKIE) is not None:
+            controller.remove(REMEMBER_COOKIE, secure=True, same_site="strict")
+    except (ImportError, RuntimeError):
+        pass
+
+
+def _store_remembered(st, controller=None):
+    """Write a time-bounded, encrypted Supabase refresh token to this browser.
+
+    Rotated refresh tokens replace prior cookies but do NOT extend the original
+    30-day window. Neither the user's password nor their plaintext tokens
+    appear in the cookie.
+    """
+    state = st.session_state
+    if not state.get("swu_remember_browser") or not state.get("swu_auth_refresh"):
+        return
+    cipher = _remember_cipher(st)
+    if cipher is None:
+        return
+    until = state.get("swu_remember_until") or (
+        datetime.now(timezone.utc) + timedelta(days=REMEMBER_DAYS)
+    ).timestamp()
+    seconds_left = int(float(until) - datetime.now(timezone.utc).timestamp())
+    if seconds_left <= 0:
+        _forget_remembered(st, controller)
+        return
+    state["swu_remember_until"] = until
+    payload = {
+        "v": 1,
+        "project": str(st.secrets["SUPABASE_URL"]),
+        "uid": state["swu_auth_user_id"],
+        "email": state["swu_auth_email"],
+        "refresh": state["swu_auth_refresh"],
+        "until": until,
+    }
+    from cryptography.fernet import Fernet
+    encrypted = cipher.encrypt(json.dumps(payload, separators=(",", ":")).encode()).decode()
+    controller = controller or _remember_controller()
+    controller.set(
+        REMEMBER_COOKIE, encrypted, max_age=seconds_left,
+        expires=datetime.now(timezone.utc) + timedelta(seconds=seconds_left),
+        secure=True, same_site="strict",
+    )
+
+
+def _restore_remembered(st, make_client, controller, emails):
+    """Restore saved identity only after Supabase verifies a rotated token."""
+    state = st.session_state
+    if state.get("swu_auth_user_id"):
+        return
+    raw = controller.get(REMEMBER_COOKIE)
+    if not raw:
+        return
+    cipher = _remember_cipher(st)
+    if cipher is None:
+        return
+    try:
+        payload = json.loads(cipher.decrypt(str(raw).encode()).decode())
+        if payload.get("v") != 1 or payload.get("project") != str(st.secrets["SUPABASE_URL"]):
+            raise ValueError("Saved session does not belong to this project.")
+        if float(payload["until"]) <= datetime.now(timezone.utc).timestamp():
+            raise ValueError("Saved session has expired.")
+        expected_email = str(payload.get("email") or "").casefold()
+        # The remembered user must still be an enabled, uniquely mapped account.
+        matches = [name for name, email in emails.items() if email and email.casefold() == expected_email]
+        if len(matches) != 1:
+            raise ValueError("Saved account mapping is no longer valid.")
+        client = make_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_PUBLISHABLE_KEY"])
+        response = client.auth.refresh_session(str(payload["refresh"]))
+        if (not response.user or not response.session or
+            str(response.user.id) != str(payload["uid"]) or
+            str(response.user.email or "").casefold() != expected_email):
+            raise ValueError("Supabase did not verify the saved account.")
+        if not _set_auth(state, response):
+            raise ValueError("Supabase did not return a valid session.")
+        state["swu_auth_name"] = matches[0]
+        state["swu_remember_browser"] = True
+        state["swu_remember_until"] = float(payload["until"])
+        _store_remembered(st, controller)  # Persist rotated refresh token.
+    except Exception:
+        _forget_remembered(st, controller)
+        _clear_auth(state)
+
+
 def _client_from_session(st, make_client):
     state = st.session_state
     if not state.get("swu_auth_access") or not state.get("swu_auth_refresh"):
         return None
     client = make_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_PUBLISHABLE_KEY"])
+    old_refresh = state["swu_auth_refresh"]
     try:
-        response = client.auth.set_session(state["swu_auth_access"], state["swu_auth_refresh"])
+        response = client.auth.set_session(state["swu_auth_access"], old_refresh)
         user = client.auth.get_user().user
         if not user or str(user.id) != state.get("swu_auth_user_id"):
             raise RuntimeError("User session could not be verified.")
         if response.session:
             state["swu_auth_access"] = response.session.access_token
             state["swu_auth_refresh"] = response.session.refresh_token
+            if response.session.refresh_token != old_refresh:
+                _store_remembered(st)
     except Exception:
+        _forget_remembered(st)
         _clear_auth(state)
         raise RuntimeError("Your sign-in has expired. Please sign in again.") from None
     return client
@@ -723,6 +843,19 @@ def render_sign_in(st, make_client):
     """Six fixed names, each backed by an existing private Supabase Auth user."""
     state = st.session_state
     emails = _account_emails(st)
+    # Browser-cookie component hydrates asynchronously and reruns this script.
+    # Once hydrated, the existing Supabase account will be restored automatically.
+    try:
+        remember_controller = _remember_controller()
+        # Apply browser writes after the login/logout-triggered rerun so the
+        # frontend has a stable run in which to execute the cookie command.
+        if state.pop("swu_remember_pending_clear", False):
+            _forget_remembered(st, remember_controller)
+        elif state.pop("swu_remember_pending_save", False):
+            _store_remembered(st, remember_controller)
+        _restore_remembered(st, make_client, remember_controller, emails)
+    except ImportError:
+        remember_controller = None
     st.header("Sign in")
     st.caption("Choose an account and enter its password to access its saved decks.")
 
@@ -737,6 +870,8 @@ def render_sign_in(st, make_client):
                     client.auth.sign_out(options={"scope": "local"})
             except Exception:
                 pass
+            _forget_remembered(st, remember_controller)
+            state["swu_remember_pending_clear"] = True
             _clear_auth(state)
             st.rerun()
 
@@ -777,6 +912,7 @@ def render_sign_in(st, make_client):
                         if not _set_auth(state, refreshed):
                             raise RuntimeError("Password updated; sign in again.")
                         state["swu_auth_name"] = name if name in ACCOUNT_NAMES else None
+                        _store_remembered(st, remember_controller)
                         st.success("Password changed successfully.")
                     except Exception as exc:
                         st.error(f"Password change failed: {exc}")
@@ -789,6 +925,12 @@ def render_sign_in(st, make_client):
             chosen = st.radio("Account", ACCOUNT_NAMES, key="swu_named_account")
         with password_col:
             password = st.text_input("Password", type="password")
+            can_remember = remember_controller is not None and _remember_cipher(st) is not None
+            remember = st.checkbox(
+                "Remember me on this computer (30 days)",
+                value=can_remember, disabled=not can_remember,
+                help="Stores an encrypted sign-in token, not your password. Avoid on shared computers.",
+            )
             sign_in = st.form_submit_button("Sign in", type="primary")
     if sign_in:
         email = emails.get(chosen)
@@ -815,6 +957,15 @@ def render_sign_in(st, make_client):
                     _clear_auth(state)
                     raise RuntimeError("Account identity mismatch.")
                 state["swu_auth_name"] = chosen
+                if remember:
+                    state["swu_remember_browser"] = True
+                    state["swu_remember_until"] = (
+                        datetime.now(timezone.utc) + timedelta(days=REMEMBER_DAYS)
+                    ).timestamp()
+                    state["swu_remember_pending_save"] = True
+                else:
+                    _forget_remembered(st, remember_controller)
+                    state["swu_remember_pending_clear"] = True
                 st.rerun()
             except Exception as exc:
                 st.error(f"Sign-in failed: {exc}")
