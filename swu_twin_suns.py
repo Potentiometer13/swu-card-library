@@ -6,6 +6,7 @@ minimum 80 draw-deck cards; singleton unless specific card text overrides.
 
 from collections import Counter
 from html import escape
+import inspect
 from urllib.parse import urlsplit
 import math
 import re
@@ -775,6 +776,144 @@ def _hoverable_card_name(card):
     )
 
 
+
+# Streamlit >= 1.52 lets st.html execute trusted, static JavaScript directly
+# in the app document. This shared portal is intentionally NOT created inside
+# a deck row: row overflow/scroll containers would clip the card artwork.
+_DECK_CURSOR_PREVIEW_HTML = r"""
+<style>
+/* The script activates this class after installing the cursor preview. */
+html.swu-deck-cursor-preview-active .swu-deck-art-preview {
+    display: none !important;
+}
+.swu-deck-cursor-preview {
+    position: fixed !important;
+    display: none;
+    left: 0;
+    top: 0;
+    z-index: 2147483647;
+    pointer-events: none;
+    padding: 0.25rem;
+    width: min(250px, 52vw);
+    max-height: calc(100dvh - 24px);
+    overflow: hidden;
+    box-sizing: border-box;
+    border-radius: 0.45rem;
+    background: var(--background-color, #fff);
+    box-shadow: 0 6px 30px rgba(0,0,0,.45);
+}
+.swu-deck-cursor-preview img {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: calc(100dvh - 32px);
+    border-radius: 0.25rem;
+    object-fit: contain;
+}
+</style>
+<script>
+(() => {
+    "use strict";
+    const key = "__swuDeckCursorPreviewV1";
+    if (window[key]) {
+        // Event delegation survives Streamlit fragment rerenders. Hide the old
+        // card if the rows are about to be replaced, but don't add listeners.
+        window[key].hide();
+        return;
+    }
+    const portal = document.createElement("div");
+    portal.className = "swu-deck-cursor-preview";
+    const artwork = document.createElement("img");
+    artwork.alt = "Card artwork preview";
+    portal.appendChild(artwork);
+    document.body.appendChild(portal);
+    document.documentElement.classList.add("swu-deck-cursor-preview-active");
+
+    let current = null;
+    let lastX = 0;
+    let lastY = 0;
+    function hide() {
+        current = null;
+        portal.style.display = "none";
+    }
+    function position(x, y) {
+        lastX = x;
+        lastY = y;
+        const margin = 12;
+        const offset = 16;
+        const bounds = portal.getBoundingClientRect();
+        const width = bounds.width;
+        const height = bounds.height;
+        let left = x + offset;
+        let top = y + offset;
+        // Keep the complete card in view, including near window edges.
+        if (left + width > window.innerWidth - margin)
+            left = x - width - offset;
+        if (top + height > window.innerHeight - margin)
+            top = y - height - offset;
+        left = Math.min(Math.max(margin, left), Math.max(margin, window.innerWidth - width - margin));
+        top = Math.min(Math.max(margin, top), Math.max(margin, window.innerHeight - height - margin));
+        portal.style.left = left + "px";
+        portal.style.top = top + "px";
+    }
+    function show(el, x, y) {
+        const img = el.querySelector(".swu-deck-art-preview img");
+        if (!img) { hide(); return; }
+        const src = img.getAttribute("src");
+        if (!src) { hide(); return; }
+        if (current !== el || artwork.getAttribute("src") !== src) {
+            current = el;
+            artwork.src = src;
+        }
+        portal.style.display = "block";
+        position(x, y);
+    }
+    // Listen on document, not individual rows: Streamlit regularly replaces
+    // row nodes on rerun, while these delegated listeners stay valid.
+    document.addEventListener("pointermove", (event) => {
+        const el = event.target instanceof Element
+            ? event.target.closest(".swu-deck-name-hover") : null;
+        if (!el) { hide(); return; }
+        show(el, event.clientX, event.clientY);
+    }, true);
+    document.addEventListener("pointerout", (event) => {
+        if (current && (!event.relatedTarget || !current.contains(event.relatedTarget)))
+            hide();
+    }, true);
+    document.addEventListener("focusin", (event) => {
+        const el = event.target instanceof Element
+            ? event.target.closest(".swu-deck-name-hover") : null;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        show(el, rect.right, rect.top);
+    }, true);
+    document.addEventListener("focusout", (event) => {
+        if (current && !current.contains(event.relatedTarget)) hide();
+    }, true);
+    document.addEventListener("scroll", hide, true);
+    window.addEventListener("blur", hide);
+    artwork.addEventListener("load", () => {
+        if (current) position(lastX, lastY);
+    });
+    window[key] = {hide};
+})();
+</script>
+"""
+
+
+def _install_deck_cursor_preview(st):
+    """Enable cursor-following full card art; older Streamlit gets CSS fallback."""
+    html = getattr(st, "html", None)
+    if not callable(html):
+        return
+    try:
+        supports_js = "unsafe_allow_javascript" in inspect.signature(html).parameters
+    except (TypeError, ValueError):
+        supports_js = False
+    if supports_js:
+        # Static trusted JS, no card/user content interpolated into this script.
+        html(_DECK_CURSOR_PREVIEW_HTML, unsafe_allow_javascript=True)
+
 def _gallery_cards(main_entries, side_entries):
     """One artwork per gameplay card, main deck first, then sideboard-only."""
     categories = (
@@ -1197,26 +1336,24 @@ def render_deck_builder(st):
             line-height:1.14rem;}
         .swu-deck-name-text {display:block;overflow:hidden;text-overflow:ellipsis;
             white-space:nowrap;}
-        /* Fixed-position previews escape the horizontal scroll clipping of
-           Streamlit's non-wrapping row containers. They do not change row height. */
+        /* CSS fallback for Streamlit versions without st.html JavaScript.
+           In modern Streamlit, the cursor-following portal replaces this. */
         .swu-deck-art-preview {display:block;visibility:hidden;opacity:0;
-            position:fixed;top:12vh;right:1.25rem;
-            left:auto;width:clamp(180px,22vw,310px);max-width:55vw;
+            position:absolute;top:-0.35rem;left:calc(100% + 0.65rem);
+            right:auto;width:220px;max-width:55vw;
             max-height:78vh;z-index:999999;pointer-events:none;
             background:var(--background-color,#fff);border-radius:0.45rem;
             box-shadow:0 6px 30px rgba(0,0,0,.45);padding:0.3rem;
             box-sizing:border-box;overflow:visible;}
         .swu-deck-art-preview img {display:block;width:100%;height:auto;
             max-height:calc(78vh - 0.6rem);object-fit:contain;border-radius:0.25rem;}
-        @media (max-width: 700px) {
-            .swu-deck-art-preview {top:15vh;right:0.5rem;width:190px;max-width:60vw;}
-        }
         .swu-deck-name-hover:hover .swu-deck-art-preview,
         .swu-deck-name-hover:focus .swu-deck-art-preview,
         .swu-deck-name-hover:focus-within .swu-deck-art-preview {
             visibility:visible;opacity:1;
         }
         </style>""", unsafe_allow_html=True)
+        _install_deck_cursor_preview(st)
 
         st.subheader("Deck")
         # One selector controls the main/sideboard rows and the artwork panel.
