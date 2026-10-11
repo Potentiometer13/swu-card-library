@@ -6,6 +6,8 @@ minimum 80 draw-deck cards; singleton unless specific card text overrides.
 
 from collections import Counter
 from html import escape
+from urllib.parse import urlsplit
+import math
 import re
 
 from swu_collection_progress import (
@@ -743,6 +745,183 @@ def _cost_sort_key(card):
         return (1, 0)
 
 
+
+def _safe_card_image_url(card):
+    """Only allow public HTTP(S) art URLs in our generated HTML markup."""
+    url = str(card.get("front_image_url") or "").strip()
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return ""
+    if parsed.scheme.lower() not in ("https", "http") or not parsed.netloc:
+        return ""
+    return url
+
+
+def _hoverable_card_name(card):
+    """An accessible, CSS-only artwork preview. No extra Streamlit widgets."""
+    name = escape(display_card_name(card), quote=True)
+    image = _safe_card_image_url(card)
+    if not image:
+        return (
+            f'<span title="{name}" class="swu-deck-name-text">{name}</span>'
+        )
+    return (
+        f'<span class="swu-deck-name-hover" tabindex="0" aria-label="{name}">'
+        f'<span title="{name}" class="swu-deck-name-text">{name}</span>'
+        f'<span class="swu-deck-art-preview" aria-hidden="true">'
+        f'<img src="{escape(image, quote=True)}" alt="" loading="lazy"></span>'
+        f'</span>'
+    )
+
+
+def _gallery_cards(main_entries, side_entries):
+    """One artwork per gameplay card, main deck first, then sideboard-only."""
+    categories = (
+        "Ground Units", "Space Units", "Events", "Upgrades",
+        "Other Units", "Other Cards",
+    )
+    rank = {label: index for index, label in enumerate(categories)}
+    seen = set()
+    ordered = []
+    for group in (main_entries, side_entries):
+        values = sorted(group.items(), key=lambda item: (
+            rank.get(_deck_section(item[1]["card"]), len(rank)),
+            _cost_sort_key(item[1]["card"]),
+            display_card_name(item[1]["card"]).casefold(),
+        ))
+        for gid, entry in values:
+            if gid in seen or int(entry.get("count", 0)) <= 0:
+                continue
+            seen.add(gid)
+            ordered.append(entry["card"])
+    return ordered
+
+
+def _cost_group(card):
+    """Format each printed cost as a distribution bucket, including X costs."""
+    raw = card.get("cost")
+    if raw is None or not str(raw).strip():
+        return "Unknown"
+    raw = str(raw).strip()
+    try:
+        numeric = float(raw)
+        if math.isfinite(numeric) and numeric >= 0:
+            return str(int(numeric)) if numeric.is_integer() else f"{numeric:g}"
+    except (ValueError, OverflowError):
+        pass
+    return raw.upper() if raw.upper() == "X" else "Other"
+
+
+def _deck_statistics(main_entries):
+    """Counts and percentages are copy-weighted and exclude the sideboard."""
+    kinds = Counter({"Ground units": 0, "Space units": 0, "Non-units": 0})
+    costs = Counter()
+    total = 0
+    for entry in main_entries.values():
+        quantity = max(0, int(entry.get("count", 0)))
+        if not quantity:
+            continue
+        card = entry["card"]
+        kind = str(card.get("card_type") or "").strip().casefold()
+        arena = str(card.get("arena") or "").strip().casefold()
+        if kind in ("event", "upgrade"):
+            category = "Non-units"
+        elif arena == "ground" and kind in ("unit", ""):
+            category = "Ground units"
+        elif arena == "space" and kind in ("unit", ""):
+            category = "Space units"
+        elif kind == "unit":
+            category = "Other units"  # Unit with missing arena.
+        else:
+            category = "Unknown type"  # Missing or unrecognized metadata.
+        kinds[category] += quantity
+        costs[_cost_group(card)] += quantity
+        total += quantity
+    def cost_key(label):
+        try:
+            return (0, float(label))
+        except ValueError:
+            return (1, label)
+    ordered_costs = [(label, costs[label]) for label in sorted(costs, key=cost_key)]
+    ordered_kinds = [(label, kinds[label]) for label in (
+        "Ground units", "Space units", "Non-units", "Other units", "Unknown type"
+    ) if label in kinds and (label in ("Ground units", "Space units", "Non-units") or kinds[label] > 0)]
+    return total, ordered_kinds, ordered_costs
+
+
+def _deck_stats_bar(label, quantity, total):
+    percent = quantity / total * 100 if total else 0
+    name = escape(str(label))
+    return (
+        '<div class="swu-stats-bar-row">'
+        f'<div class="swu-stats-bar-heading"><span>{name}</span>'
+        f'<span>{percent:.1f}% <small>({quantity})</small></span></div>'
+        '<div class="swu-stats-track">'
+        f'<div class="swu-stats-fill" style="width:{percent:.4f}%"></div>'
+        '</div></div>'
+    )
+
+
+def _render_deck_right_panel(st, session, entries):
+    """Visual gallery or copy-weighted main-deck statistics; no DB calls."""
+    view = st.radio(
+        "View", ("Card Images", "Statistics"),
+        horizontal=True, key="swu_deck_right_view",
+    )
+    if view == "Card Images":
+        cards = _gallery_cards(entries, sideboard_entries(session))
+        images = [(_safe_card_image_url(card), display_card_name(card)) for card in cards]
+        images = [(url, name) for url, name in images if url]
+        if not images:
+            st.info("Add cards to see their images here.")
+            return
+        tiles = "".join(
+            '<div class="swu-panel-art-tile">'
+            f'<img src="{escape(url, quote=True)}" '
+            f'alt="{escape(name, quote=True)}" '
+            f'title="{escape(name, quote=True)}" loading="lazy" decoding="async">'
+            '</div>'
+            for url, name in images
+        )
+        st.markdown(
+            '<style>'
+            '.swu-panel-art-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));'
+            'gap:0.45rem;align-items:start;}'
+            '.swu-panel-art-tile{min-width:0;}'
+            '.swu-panel-art-tile img{display:block;width:100%;height:auto;'
+            'border-radius:0.35rem;}'
+            '@media(max-width:850px){.swu-panel-art-grid{grid-template-columns:repeat(3,minmax(0,1fr));}}'
+            '</style>'
+            f'<div class="swu-panel-art-grid">{tiles}</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    total, kinds, costs = _deck_statistics(entries)
+    if not total:
+        st.info("Add cards to see deck statistics.")
+        return
+    st.caption(f"Main deck only · {total} cards (copies counted)")
+    type_bars = "".join(_deck_stats_bar(label, qty, total) for label, qty in kinds)
+    cost_bars = "".join(_deck_stats_bar(f"Cost {label}", qty, total) for label, qty in costs)
+    st.markdown(
+        '<style>'
+        '.swu-stats-group{margin-bottom:1.3rem;}'
+        '.swu-stats-group h4{margin:0 0 0.65rem 0;font-size:1.02rem;}'
+        '.swu-stats-bar-row{margin:0.65rem 0;}'
+        '.swu-stats-bar-heading{display:flex;justify-content:space-between;gap:0.75rem;'
+        'font-size:0.89rem;margin-bottom:0.26rem;}'
+        '.swu-stats-bar-heading small{opacity:0.65;}'
+        '.swu-stats-track{height:0.7rem;background:rgba(120,130,145,0.18);'
+        'border-radius:0.35rem;overflow:hidden;}'
+        '.swu-stats-fill{height:100%;background:#4388c7;border-radius:0.35rem;}'
+        '</style>'
+        f'<div class="swu-stats-group"><h4>Card types</h4>{type_bars}</div>'
+        f'<div class="swu-stats-group"><h4>Card costs</h4>{cost_bars}</div>',
+        unsafe_allow_html=True,
+    )
+
 def grouped_deck_rows(entries, session, filter_choice):
     """Pure grouping and sorting logic; leaves collection progress unmodified."""
     section_order = (
@@ -962,7 +1141,36 @@ def render_deck_builder(st):
                         st.write(needs_to_buy(1, rec))
 
 
-        # A tighter left panel, with space on the right for the next interactive view.
+        # Hover artwork sits over the deck list without expanding row height.
+        st.markdown("""
+        <style>
+        .st-key-swu_compact_deck_list [data-testid="stColumn"],
+        .st-key-swu_compact_sideboard_list [data-testid="stColumn"] {
+            overflow: visible !important;
+        }
+        .st-key-swu_compact_deck_list [data-testid="stHorizontalBlock"]:has(.swu-deck-name-hover:hover),
+        .st-key-swu_compact_sideboard_list [data-testid="stHorizontalBlock"]:has(.swu-deck-name-hover:hover) {
+            position:relative;z-index:100;
+        }
+        .swu-deck-name-hover {position:relative;display:block;min-width:0;
+            cursor:zoom-in;outline-offset:2px;font-size:calc(0.8rem + 2px);
+            line-height:1.14rem;}
+        .swu-deck-name-text {display:block;overflow:hidden;text-overflow:ellipsis;
+            white-space:nowrap;}
+        .swu-deck-art-preview {display:block;visibility:hidden;opacity:0;
+            position:absolute;top:-0.5rem;left:calc(100% + 0.5rem);
+            width:220px;max-width:60vw;z-index:10000;pointer-events:none;
+            background:var(--background-color,#fff);border-radius:0.45rem;
+            box-shadow:0 5px 28px rgba(0,0,0,.40);padding:0.25rem;}
+        .swu-deck-art-preview img {display:block;width:100%;height:auto;
+            max-height:74vh;object-fit:contain;border-radius:0.25rem;}
+        .swu-deck-name-hover:hover .swu-deck-art-preview,
+        .swu-deck-name-hover:focus .swu-deck-art-preview,
+        .swu-deck-name-hover:focus-within .swu-deck-art-preview {
+            visibility:visible;opacity:1;
+        }
+        </style>""", unsafe_allow_html=True)
+
         deck_left, deck_right = st.columns([2, 3], gap="medium")
 
         with deck_left:
@@ -1107,14 +1315,7 @@ def render_deck_builder(st):
                                 with qty_col:
                                     st.markdown(f"**{quantity}×**")
                                 with name_col:
-                                    name = escape(display_card_name(card), quote=True)
-                                    st.markdown(
-                                        f'<div title="{name}" '
-                                        f'style="font-size:calc(0.8rem + 2px);'
-                                        f'overflow:hidden;text-overflow:ellipsis;'
-                                        f'white-space:nowrap;line-height:1.14rem">{name}</div>',
-                                        unsafe_allow_html=True,
-                                    )
+                                    st.markdown(_hoverable_card_name(card), unsafe_allow_html=True)
                                 with aspect_col:
                                     icons = "".join(ICON.get(a, "") for a in (card.get("aspects") or []))
                                     tooltip = (
@@ -1190,7 +1391,7 @@ def render_deck_builder(st):
                         with cols[0]:
                             st.markdown(f"**{quantity}×**")
                         with cols[1]:
-                            st.markdown(escape(display_card_name(entry["card"])))
+                            st.markdown(_hoverable_card_name(entry["card"]), unsafe_allow_html=True)
                         with cols[2]:
                             st.button(
                                 "✓" if rec["inDeck"] >= quantity else "✕",
@@ -1213,7 +1414,6 @@ def render_deck_builder(st):
                 st.caption("No cards in sideboard.")
 
         with deck_right:
-            # Reserved for the dynamic card/details panel planned next.
-            st.empty()
+            _render_deck_right_panel(st, session, entries)
 
     render_collection_and_compact_deck()
