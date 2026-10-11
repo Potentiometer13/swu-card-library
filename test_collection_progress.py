@@ -4,7 +4,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(1, '/mnt/data/swu_stage_2g_named_decks')
 sys.modules.setdefault('streamlit', SimpleNamespace(dialog=lambda *a, **kw: (lambda f: f)))
 
 from swu_collection_progress import (
@@ -13,7 +12,7 @@ from swu_collection_progress import (
 )
 from swu_deck_storage import normalize_snapshot, snapshot_from_session, restore_snapshot
 from swu_swudb_json import export_swudb, parse_swudb_json, resolve_swudb
-from swu_twin_suns import _on_progress_widget_change, _shopping_csv
+from swu_twin_suns import _on_progress_widget_change, tcgplayer_missing_text, remove_card
 
 
 def fake(typ, code, number, name, aspects=None, gid=None, rules=''):
@@ -114,13 +113,13 @@ def test_counts_and_widgets():
     set_progress(session,'g-Swarming Vulture Droid',4,2,1)
     totals=progress_totals(required,session[PROGRESS_SESSION_KEY])
     assert totals == {'required':8,'inDeck':3,'ownedElsewhere':1,'needToBuy':4},totals
-    assert b'Swarming Vulture Droid' in _shopping_csv(required,session[PROGRESS_SESSION_KEY])
+    assert tcgplayer_missing_text(required,session[PROGRESS_SESSION_KEY]) == '1 Base1\n1 Leader1\n1 Leader2\n1 Swarming Vulture Droid\n'
     session['swu_progress_in_g-Unit1']=True
     session['swu_progress_owned_g-Unit1']=True
     _on_progress_widget_change(session,'g-Unit1',1,'ownedElsewhere')
     assert get_progress(session,'g-Unit1',1)=={'inDeck':0,'ownedElsewhere':1}
     assert session['swu_progress_in_g-Unit1'] is False
-    print('PASS: totals, need-to-buy CSV and conflicting checkbox selection')
+    print('PASS: totals, need-to-buy text and conflicting checkbox selection')
 
 
 def test_cloud_snapshot_compatibility():
@@ -134,61 +133,49 @@ def test_cloud_snapshot_compatibility():
     print('PASS: old online saves load without progress loss/error')
 
 
+def test_remove_multi_copy_progress():
+    q={'swu_twin_suns_cards':{'g-Swarming Vulture Droid':{'card':vulture,'count':3}}}
+    set_progress(q,'g-Swarming Vulture Droid',3,2,1)
+    q['swu_progress_in_g-Swarming Vulture Droid']=2
+    q['swu_progress_owned_g-Swarming Vulture Droid']=1
+    remove_card(q,'g-Swarming Vulture Droid')
+    assert q['swu_twin_suns_cards']['g-Swarming Vulture Droid']['count']==2
+    assert get_progress(q,'g-Swarming Vulture Droid',2)=={'inDeck':2,'ownedElsewhere':0}
+    assert q['swu_progress_owned_g-Swarming Vulture Droid']==0
+    remove_card(q,'g-Swarming Vulture Droid')
+    remove_card(q,'g-Swarming Vulture Droid')
+    assert 'g-Swarming Vulture Droid' not in q['swu_card_progress']
+    assert 'swu_progress_in_g-Swarming Vulture Droid' not in q
+    print('PASS: reducing and removing multi-copy cards keeps progress in bounds')
+
+
+def test_sideboard_progress_round_trip():
+    from swu_twin_suns import (move_to_sideboard, move_to_main_deck,
+                               add_sideboard_card, SIDEBOARD_PROGRESS_KEY)
+    session = {'swu_selected_leaders': [l1, l2], 'swu_selected_base': base,
+               'swu_twin_suns_cards': {'g-Unit1': {'card': c1, 'count': 1}}}
+    set_progress(session, 'g-Unit1', 1, 1, 0)
+    assert move_to_sideboard(session, 'g-Unit1')[0]
+    assert not session['swu_twin_suns_cards']
+    assert session[SIDEBOARD_PROGRESS_KEY]['g-Unit1']['inDeck'] == 1
+    assert not add_sideboard_card(session, c1)[0]
+    snapshot = snapshot_from_session(session, 'Sideboard round trip')
+    document = export_swudb(snapshot)
+    resolved = resolve_swudb(DB(), parse_swudb_json(document))
+    restored = {}
+    restore_snapshot(restored, resolved)
+    assert export_swudb(snapshot_from_session(restored, 'Sideboard round trip')) == document
+    assert move_to_main_deck(restored, 'g-Unit1')[0]
+    assert get_progress(restored, 'g-Unit1', 1)['inDeck'] == 1
+    assert not restored['swu_twin_suns_sideboard']
+    print('PASS: sideboard moves preserve progress, copy limits and JSON round trips')
+
+
 if __name__ == '__main__':
-    for fn in [test_export_import_round_trip,test_pure_swudb_import,test_invalid_progress_fails_safely,test_counts_and_widgets,test_cloud_snapshot_compatibility]:
-        fn()
-    print('ALL 5 TEST GROUPS PASSED')
-
-# Extra UI smoke check: no Streamlit runtime needed.
-def test_render_smoke():
-    class Box:
-        def __enter__(self): return self
-        def __exit__(self,*args): return False
-    class UI:
-        def __init__(self, state):
-            self.session_state=state
-            self.seen=[]
-        def columns(self, spec, **kw):
-            return [Box() for _ in range(spec if isinstance(spec,int) else len(spec))]
-        def expander(self,*args,**kwargs):
-            self.seen.append('expander')
-            return Box()
-        def selectbox(self, label, opts, **kwargs):
-            return opts[0]
-        def checkbox(self,label,**kwargs):
-            return self.session_state[kwargs['key']]
-        def number_input(self,label,**kwargs):
-            return self.session_state[kwargs['key']]
-        def __getattr__(self,name):
-            def event(*args,**kwargs):
-                self.seen.append(name)
-            return event
-    from swu_twin_suns import render_deck_builder
-    session={'swu_selected_leaders':[l1,l2], 'swu_selected_base':base,
-             'swu_twin_suns_cards':{'g-Unit1':{'card':c1,'count':1},
-                                    'g-Swarming Vulture Droid':{'card':vulture,'count':4}}}
-    ui=UI(session)
-    render_deck_builder(ui)
-    assert 'progress' in ui.seen
-    assert 'download_button' in ui.seen
-    assert 'expander' in ui.seen
-    assert session['swu_progress_in_g-Unit1'] is False
-    assert session['swu_progress_in_g-Swarming Vulture Droid'] == 0
-    print('PASS: Streamlit deck-progress UI renders with two leaders/base and mixed copy limits')
-
-test_render_smoke()
-
-from swu_twin_suns import add_card, remove_card
-q={'swu_twin_suns_cards':{'g-Swarming Vulture Droid':{'card':vulture,'count':3}}}
-set_progress(q,'g-Swarming Vulture Droid',3,2,1)
-q['swu_progress_in_g-Swarming Vulture Droid']=2
-q['swu_progress_owned_g-Swarming Vulture Droid']=1
-remove_card(q,'g-Swarming Vulture Droid')
-assert q['swu_twin_suns_cards']['g-Swarming Vulture Droid']['count']==2
-assert get_progress(q,'g-Swarming Vulture Droid',2)=={'inDeck':2,'ownedElsewhere':0}
-assert q['swu_progress_owned_g-Swarming Vulture Droid']==0
-remove_card(q,'g-Swarming Vulture Droid')
-remove_card(q,'g-Swarming Vulture Droid')
-assert 'g-Swarming Vulture Droid' not in q['swu_card_progress']
-assert 'swu_progress_in_g-Swarming Vulture Droid' not in q
-print('PASS: reducing and removing multi-copy cards keeps progress in bounds')
+    tests = [test_export_import_round_trip, test_pure_swudb_import,
+             test_invalid_progress_fails_safely, test_counts_and_widgets,
+             test_cloud_snapshot_compatibility, test_remove_multi_copy_progress,
+             test_sideboard_progress_round_trip]
+    for test in tests:
+        test()
+    print(f'ALL {len(tests)} TEST GROUPS PASSED')

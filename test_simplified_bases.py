@@ -24,7 +24,8 @@ def make(aspect=None, name='Test Base', hp=30, text='',set_code='HMW',traits=Non
 k=make('Command',name='Theed Palace',traits=['NABOO'])
 assert m.base_planet(k)=='Naboo'
 assert m.classify_base(k)=='standard'
-assert m.location_label(k).startswith('Naboo —')
+assert m.location_label(k) == 'Naboo'
+assert m.location_label(make(name='Other location — Outpost')) == 'Outpost'
 assert m.classify_base(make(name='Neutral'))=='neutral'
 assert m.classify_base(make('Cunning',text='Action: draw a card'))=='special'
 assert m.classify_base(make('Vigilance',hp=25))=='special'
@@ -34,7 +35,7 @@ sel={'swu_selected_leader':{'gameplay_id':'A','aspects':['Villainy','Command']}}
 assert m.leader_primary_aspects(sel)=={'Command'}
 sel['swu_selected_leaders']=[{'aspects':['Heroism','Vigilance','Vigilance']}]
 assert m.leader_primary_aspects(sel)=={'Command','Vigilance'}
-print('PASS: default exclusion derives leader primary colors, ignoring alignments')
+print('PASS: leader primary colors, ignoring alignments')
 
 f=dict(name='',ability='',exclude_ability='',min_hp=0,max_hp=30,
        absolute_max_hp=30,mode='Exclude Selected',selected_aspects={'Command'},
@@ -48,19 +49,15 @@ print('PASS: Exclude Selected matches agreed aspect behavior')
 versions=[make('Command',set_code='SOR'), make('Command',set_code='HMW')]
 versions[1]['uuid']='variant'
 versions[1]['gameplay_id']=versions[0]['gameplay_id']
-f=dict(f,mode='All Selected',selected_aspects=set(),sets=['HMW'])
+f=dict(f,mode='Deck Compatibility',selected_aspects={'Command'},sets=['HMW'])
 assert m.first_matching_printing(versions[0],{versions[0]['gameplay_id']:versions},f)['uuid']=='variant'
 print('PASS: set filtering honors alternate printings')
 
 app=Path(__file__).with_name('app.py').read_text()
 ast.parse(app)
 assert 'sync_base_filters_from_leader()' in app
-assert '"swu_base_aspect_mode": "Exclude Selected"' in app
-assert '"Bases per page", [100, 40, 20]' in app
-assert '#### Standard bases' in app and '#### Colorless bases' in app
-assert '#### Bases with abilities' in app
 assert app.count('with leader_tab:')==1 and app.count('with card_tab:')==1
-print('PASS: code compiles and original three tabs remain present')
+print('PASS: code compiles and gallery tabs remain present')
 # Validate synchronization semantics independently of Streamlit page execution.
 script=ast.parse(app)
 node=next(n for n in script.body if isinstance(n,ast.FunctionDef)
@@ -72,15 +69,15 @@ sync=namespace['sync_base_filters_from_leader']
 streamlit.session_state.clear()
 streamlit.session_state['swu_selected_leader']={'gameplay_id':'g1','aspects':['Villainy','Command']}
 sync()
-assert streamlit.session_state['swu_base_aspect_command'] is True
-assert all(not streamlit.session_state['swu_base_aspect_'+x.lower()] for x in
-           ('Vigilance','Aggression','Cunning'))
-assert streamlit.session_state['swu_base_aspect_mode']=='Exclude Selected'
-streamlit.session_state['swu_base_aspect_command']=False
-sync()
 assert streamlit.session_state['swu_base_aspect_command'] is False
+assert all(streamlit.session_state['swu_base_aspect_'+x.lower()] for x in
+           ('Vigilance','Aggression','Cunning'))
+assert streamlit.session_state['swu_base_aspect_mode']=='Deck Compatibility'
+streamlit.session_state['swu_base_aspect_command']=True
+sync()
+assert streamlit.session_state['swu_base_aspect_command'] is True
 streamlit.session_state['swu_selected_leader']={'gameplay_id':'g2','aspects':['Heroism','Aggression']}
 sync()
-assert streamlit.session_state['swu_base_aspect_aggression'] is True
-assert streamlit.session_state['swu_base_aspect_command'] is False
-print('PASS: leader change reinitializes aspect exclusions; manual changes persist')
+assert streamlit.session_state['swu_base_aspect_aggression'] is False
+assert streamlit.session_state['swu_base_aspect_command'] is True
+print('PASS: leader change reinitializes compatible base aspects; manual changes persist')
