@@ -111,15 +111,18 @@ def cards_in_saved_decks(st, make_client):
     counts = Counter()
     for row in _saved_decks(st, make_client):
         snapshot = row.get("deck_data") or {}
-        progress = snapshot.get("card_progress") or {}
-        if not isinstance(progress, dict):
-            continue
-        for gid, record in progress.items():
-            if isinstance(record, dict):
-                try:
-                    amount = int(record.get("inDeck", 0))
-                except (ValueError, TypeError):
-                    amount = 0
-                if amount > 0:
-                    counts[str(gid)] += amount
+        # Physical Added copies in both main and sideboard count as being
+        # assigned to saved decks. Pre-sideboard saves simply omit the latter.
+        for progress in (snapshot.get("card_progress") or {},
+                         snapshot.get("sideboard_progress") or {}):
+            if not isinstance(progress, dict):
+                continue
+            for gid, record in progress.items():
+                if isinstance(record, dict):
+                    try:
+                        amount = int(record.get("inDeck", 0))
+                    except (ValueError, TypeError):
+                        amount = 0
+                    if amount > 0:
+                        counts[str(gid)] += amount
     return dict(counts)

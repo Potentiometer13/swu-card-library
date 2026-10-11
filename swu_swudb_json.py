@@ -57,8 +57,11 @@ def export_swudb(snapshot, author=""):
     if len(leaders) != 2 or not base:
         raise ValueError("Select two leaders and a base to export a SWUDB deck.")
     cards = snapshot.get("cards") or []
+    sideboard_cards = snapshot.get("sideboard") or []
     deck = [_export_entry(row["card"], row["count"]) for row in cards]
+    sideboard = [_export_entry(row["card"], row["count"]) for row in sideboard_cards]
     deck.sort(key=lambda item: normalize_id(item["id"]))
+    sideboard.sort(key=lambda item: normalize_id(item["id"]))
     result = {
         "metadata": {
             "name": str(snapshot.get("name") or "Untitled Twin Suns Deck"),
@@ -68,7 +71,7 @@ def export_swudb(snapshot, author=""):
         "secondleader": _export_entry(leaders[1]),
         "base": _export_entry(base),
         "deck": deck,
-        "sideboard": [],
+        "sideboard": sideboard,
     }
     # Standard SWUDB fields are unchanged. The user verified that SWUDB
     # accepts this additional namespaced property.
@@ -86,6 +89,21 @@ def export_swudb(snapshot, author=""):
         "version": EXTENSION_VERSION,
         "cardProgress": card_progress,
     }
+    if sideboard_cards:
+        side_required = required_cards([], None, sideboard_cards)
+        side_by_gid = normalize_progress_map(
+            snapshot.get("sideboard_progress", {}), side_required
+        )
+        side_progress = {}
+        for gid, (card, qty) in side_required.items():
+            rec = side_by_gid.get(gid, {"inDeck": 0, "ownedElsewhere": 0})
+            ext_id = printing_id(card)
+            normalize_id(ext_id)
+            side_progress[ext_id] = {"inDeck": rec["inDeck"]}
+            if rec["ownedElsewhere"]:
+                side_progress[ext_id]["ownedElsewhere"] = rec["ownedElsewhere"]
+        # Extra namespaced key: the standard SWUDB deck fields are unchanged.
+        result[EXTENSION_NAME]["sideboardProgress"] = side_progress
     return json.dumps(result, indent=2, ensure_ascii=False).encode("utf-8")
 
 
@@ -131,10 +149,12 @@ def parse_swudb_json(raw_bytes):
     sideboard = payload.get("sideboard", [])
     if not isinstance(sideboard, list):
         raise ValueError("sideboard must be a list.")
-    if sideboard:
-        raise ValueError("Twin Suns has no sideboard here; remove sideboard entries before importing to avoid data loss.")
+    if len(sideboard) > MAX_DECK_ENTRIES:
+        raise ValueError("Sideboard has more than 500 entries.")
+    side_entries = [_entry(x, "sideboard entry") for x in sideboard]
     extension = payload.get(EXTENSION_NAME)
     progress = {}
+    side_progress = {}
     if extension is not None:
         if not isinstance(extension, dict) or type(extension.get("version")) is not int or extension["version"] != EXTENSION_VERSION:
             raise ValueError("Unsupported swuCardLibrary extension version (expected 1).")
@@ -143,6 +163,17 @@ def parse_swudb_json(raw_bytes):
             raise ValueError("swuCardLibrary.cardProgress must be an object of card IDs.")
         deck_ids = {normalize_id(i) for i in [leader[0], second[0], base[0]]}
         deck_ids.update(normalize_id(i) for i, _ in entries)
+        side_ids = {normalize_id(i) for i, _ in side_entries}
+        raw_side_progress = extension.get("sideboardProgress", {})
+        if not isinstance(raw_side_progress, dict) or len(raw_side_progress) > MAX_DECK_ENTRIES:
+            raise ValueError("swuCardLibrary.sideboardProgress must be an object.")
+        for identifier, value in raw_side_progress.items():
+            key = normalize_id(identifier)
+            if key not in side_ids:
+                raise ValueError(f"Sideboard progress references {identifier}, which is not in sideboard.")
+            if key in side_progress:
+                raise ValueError(f"Duplicate sideboard progress ID for {identifier}.")
+            side_progress[key] = normalize_record(value, MAX_COPIES, strict=True)
         for identifier, value in raw_progress.items():
             key = normalize_id(identifier)
             if key not in deck_ids:
@@ -155,7 +186,8 @@ def parse_swudb_json(raw_bytes):
     return {
         "name": name.strip(), "author": author.strip(),
         "leaders": [leader, second], "base": base, "deck": entries,
-        "progress": progress,
+        "sideboard": side_entries,
+        "progress": progress, "sideboard_progress": side_progress,
     }
 
 
@@ -215,7 +247,8 @@ def resolve_swudb(db, parsed):
     leader_rows = _matching_rows(db, "swu_grouped_leaders", LEADER_FIELDS, requested_leaders)
     base_rows = _matching_rows(db, "swu_grouped_bases", BASE_FIELDS, [parsed["base"][0]])
     card_rows = _matching_rows(db, "swu_grouped_cards", CARD_FIELDS,
-                               [x[0] for x in parsed["deck"]])
+                               [x[0] for x in parsed["deck"]]
+                               + [x[0] for x in parsed.get("sideboard", [])])
 
     def lookup(rows, identifier):
         return rows.get(normalize_id(identifier))
@@ -226,7 +259,7 @@ def resolve_swudb(db, parsed):
             missing.append(value)
     if not lookup(base_rows, parsed["base"][0]):
         missing.append(parsed["base"][0])
-    for value, _ in parsed["deck"]:
+    for value, _ in parsed["deck"] + parsed.get("sideboard", []):
         if not lookup(card_rows, value):
             missing.append(value)
     if missing:
@@ -254,8 +287,25 @@ def resolve_swudb(db, parsed):
                 f"Copy limit exceeded for {entry['card'].get('name')}: "
                 f"{entry['count']} copies; allowed {limit}. No changes made."
             )
+    side_entries = {}
+    for identifier, count in parsed.get("sideboard", []):
+        card = lookup(card_rows, identifier)
+        gid = card_identity(card)
+        if gid in side_entries:
+            side_entries[gid]["count"] += count
+        else:
+            side_entries[gid] = {"card": card, "count": count}
+    for gid in set(entries) | set(side_entries):
+        item = entries.get(gid, side_entries.get(gid))
+        limit = card_copy_limit(item["card"])
+        combined = (int(entries.get(gid, {}).get("count", 0))
+                    + int(side_entries.get(gid, {}).get("count", 0)))
+        if limit is not None and combined > limit:
+            raise ValueError(f"Copy limit exceeded across main and sideboard: {item['card'].get('name')}.")
     selected_card_rows = list(entries.values())
+    selected_side_rows = list(side_entries.values())
     required = required_cards(leaders, base, selected_card_rows)
+    side_required = required_cards([], None, selected_side_rows)
     progress_by_gid = {}
     requested = (
         [(i, card) for i, card in zip(requested_leaders, leaders)]
@@ -273,11 +323,25 @@ def resolve_swudb(db, parsed):
                 "inDeck": old["inDeck"] + value["inDeck"],
                 "ownedElsewhere": old["ownedElsewhere"] + value["ownedElsewhere"],
             }
-    # Validate AFTER merging different printing IDs for the same gameplay card.
+    side_progress_by_gid = {}
+    for identifier, card in [
+        (i, lookup(card_rows, i)) for i, _ in parsed.get("sideboard", [])
+    ]:
+        value = parsed.get("sideboard_progress", {}).get(normalize_id(identifier))
+        if value is not None:
+            gid = card_identity(card)
+            old = side_progress_by_gid.get(gid, {"inDeck": 0, "ownedElsewhere": 0})
+            side_progress_by_gid[gid] = {
+                "inDeck": old["inDeck"] + value["inDeck"],
+                "ownedElsewhere": old["ownedElsewhere"] + value["ownedElsewhere"],
+            }
+    # Validate AFTER merging alternate printing IDs within each zone.
     progress = normalize_progress_map(progress_by_gid, required, strict=True)
+    side_progress = normalize_progress_map(side_progress_by_gid, side_required, strict=True)
     return {
         "version": 1, "format": "Twin Suns", "name": parsed["name"],
         "author": parsed["author"],
         "leaders": leaders, "base": base,
         "cards": selected_card_rows, "card_progress": progress,
+        "sideboard": selected_side_rows, "sideboard_progress": side_progress,
     }

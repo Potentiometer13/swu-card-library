@@ -14,6 +14,8 @@ from swu_collection_progress import (
 )
 
 DECK_MINIMUM = 80
+SIDEBOARD_KEY = "swu_twin_suns_sideboard"
+SIDEBOARD_PROGRESS_KEY = "swu_sideboard_progress"
 ALIGNMENT = ("Heroism", "Villainy")
 ASPECT_ORDER = ("Vigilance", "Command", "Aggression", "Cunning", "Heroism", "Villainy")
 ICON = {"Vigilance": "🔵", "Command": "🟢", "Aggression": "🔴", "Cunning": "🟡", "Heroism": "⚪", "Villainy": "⚫"}
@@ -99,6 +101,143 @@ def deck_entries(session):
     return session.setdefault("swu_twin_suns_cards", {})
 
 
+def sideboard_entries(session):
+    """Sideboard uses the same gameplay identity as main deck."""
+    return session.setdefault(SIDEBOARD_KEY, {})
+
+
+def _total_zone_copies(session, gid):
+    return (int(deck_entries(session).get(gid, {}).get("count", 0))
+            + int(sideboard_entries(session).get(gid, {}).get("count", 0)))
+
+
+def add_sideboard_card(session, card):
+    """Add one new sideboard copy, respecting limits across both zones."""
+    gid = card_identity(card)
+    if not gid:
+        return False, "This card has no gameplay ID."
+    limit = card_copy_limit(card)
+    if limit is not None and _total_zone_copies(session, gid) >= limit:
+        return False, "Copy limit reached across main deck and sideboard. Move an existing copy instead."
+    entries = sideboard_entries(session)
+    count = int(entries.get(gid, {}).get("count", 0))
+    entries[gid] = {"card": dict(card), "count": count + 1}
+    return True, "Added to sideboard."
+
+
+def _zone_progress(session, zone, gid, quantity):
+    key = PROGRESS_SESSION_KEY if zone == "main" else SIDEBOARD_PROGRESS_KEY
+    return normalize_progress_map(session.get(key) or {}, {gid: ({}, quantity)}).get(
+        gid, {"inDeck": 0, "ownedElsewhere": 0}
+    )
+
+
+def set_zone_added(session, zone, gid, quantity, mark_added=None):
+    """Toggle the physically Added count for a single deck zone."""
+    key = PROGRESS_SESSION_KEY if zone == "main" else SIDEBOARD_PROGRESS_KEY
+    rec = _zone_progress(session, zone, gid, quantity)
+    new_count = (0 if rec["inDeck"] >= quantity else quantity) if mark_added is None else (quantity if mark_added else 0)
+    session.setdefault(key, {})[gid] = {"inDeck": new_count, "ownedElsewhere": 0}
+    if zone == "main":
+        _sync_progress_widget_values(session, gid, quantity)
+
+
+def _move_zone_copy(session, gid, source, target):
+    """Move one copy, transferring its physical status between zones."""
+    source_rows = deck_entries(session) if source == "main" else sideboard_entries(session)
+    target_rows = deck_entries(session) if target == "main" else sideboard_entries(session)
+    if gid not in source_rows:
+        return False, "Card not found."
+    old_count = int(source_rows[gid]["count"])
+    card = source_rows[gid]["card"]
+    # Moving does not increase the combined copy count.
+    src_rec = _zone_progress(session, source, gid, old_count)
+    marked = int(src_rec["inDeck"] > 0)
+    elsewhere = int(not marked and src_rec["ownedElsewhere"] > 0)
+    new_src = {"inDeck": src_rec["inDeck"] - marked,
+               "ownedElsewhere": src_rec["ownedElsewhere"] - elsewhere}
+    src_key = PROGRESS_SESSION_KEY if source == "main" else SIDEBOARD_PROGRESS_KEY
+    dst_key = PROGRESS_SESSION_KEY if target == "main" else SIDEBOARD_PROGRESS_KEY
+    if old_count <= 1:
+        del source_rows[gid]
+        session.setdefault(src_key, {}).pop(gid, None)
+        if source == "main":
+            for field in ("inDeck", "ownedElsewhere"):
+                session.pop(_progress_widget_key(gid, field), None)
+    else:
+        source_rows[gid]["count"] = old_count - 1
+        session.setdefault(src_key, {})[gid] = new_src
+        if source == "main":
+            _sync_progress_widget_values(session, gid, old_count - 1)
+    old_target = int(target_rows.get(gid, {}).get("count", 0))
+    dst_rec = _zone_progress(session, target, gid, old_target)
+    target_rows[gid] = {"card": dict(card), "count": old_target + 1}
+    session.setdefault(dst_key, {})[gid] = {
+        "inDeck": dst_rec["inDeck"] + marked,
+        "ownedElsewhere": dst_rec["ownedElsewhere"] + elsewhere,
+    }
+    if target == "main":
+        _sync_progress_widget_values(session, gid, old_target + 1)
+    return True, "Card moved."
+
+
+def move_to_sideboard(session, gid):
+    return _move_zone_copy(session, gid, "main", "sideboard")
+
+
+def move_to_main_deck(session, gid):
+    return _move_zone_copy(session, gid, "sideboard", "main")
+
+
+def remove_sideboard_card(session, gid):
+    rows = sideboard_entries(session)
+    if gid not in rows:
+        return
+    qty = int(rows[gid]["count"])
+    if qty <= 1:
+        del rows[gid]
+        session.setdefault(SIDEBOARD_PROGRESS_KEY, {}).pop(gid, None)
+    else:
+        rows[gid]["count"] = qty - 1
+        rec = _zone_progress(session, "sideboard", gid, qty - 1)
+        session.setdefault(SIDEBOARD_PROGRESS_KEY, {})[gid] = rec
+
+
+def export_requirements(session, scope="both"):
+    """Return (required, progress) for main, sideboard or both.
+
+    Sum quantities and statuses by gameplay ID. Leaders/base belong to main.
+    """
+    if scope not in {"main", "sideboard", "both"}:
+        raise ValueError("Invalid export scope.")
+    combined, combined_progress = {}, {}
+    zones = []
+    if scope in ("main", "both"):
+        zones.append((
+            required_cards(get_selected_leaders(session), session.get("swu_selected_base"),
+                           list((session.get("swu_twin_suns_cards") or {}).values())),
+            PROGRESS_SESSION_KEY,
+        ))
+    if scope in ("sideboard", "both"):
+        zones.append((
+            required_cards([], None, list((session.get(SIDEBOARD_KEY) or {}).values())),
+            SIDEBOARD_PROGRESS_KEY,
+        ))
+    for required, key in zones:
+        progress = normalize_progress_map(session.get(key) or {}, required)
+        for gid, (card, qty) in required.items():
+            if gid in combined:
+                old_card, old_count = combined[gid]
+                combined[gid] = (old_card, old_count + qty)
+            else:
+                combined[gid] = (card, qty)
+            previous = combined_progress.setdefault(gid, {"inDeck": 0, "ownedElsewhere": 0})
+            current = progress.get(gid, {})
+            for field in ("inDeck", "ownedElsewhere"):
+                previous[field] += int(current.get(field, 0))
+    return combined, combined_progress
+
+
 def exception_copy_limit(rules_text):
     """Recognize explicit deck-construction permissions ONLY, not ordinary copy text.
 
@@ -145,7 +284,7 @@ def add_card(session, card):
     current = entries.get(gid, {})
     count = current.get("count", 0)
     limit = card_copy_limit(card)
-    if limit is not None and count >= limit:
+    if limit is not None and _total_zone_copies(session, gid) >= limit:
         return False, "Copy limit reached for this card."
     entries[gid] = {"card": dict(card), "count": count + 1}
     # A copy-limit exception can change a checkbox into a numeric input.
@@ -197,10 +336,10 @@ def deck_validation(session):
         errors.append("Select one base.")
     if count < DECK_MINIMUM:
         errors.append(f"Add at least {DECK_MINIMUM - count} more draw-deck cards.")
-    for entry in entries.values():
+    for gid, entry in {**entries, **sideboard_entries(session)}.items():
         limit = card_copy_limit(entry["card"])
-        if limit is not None and entry["count"] > limit:
-            errors.append(f"Copy limit exceeded: {entry['card'].get('name', 'Unnamed card')}.")
+        if limit is not None and _total_zone_copies(session, gid) > limit:
+            errors.append(f"Copy limit exceeded across zones: {entry['card'].get('name', 'Unnamed card')}.")
     return count, errors
 
 
@@ -629,11 +768,11 @@ def grouped_deck_rows(entries, session, filter_choice):
     return [(label, rows[label]) for label in section_order if rows[label]]
 
 
-def official_deck_list_text(snapshot):
+def official_deck_list_text(snapshot, include_sideboard=True):
     """Plain-text Twin Suns roster, sorted like the on-screen Deck list.
 
-    Intentionally excludes ownership/shopping fields. The current Twin Suns
-    app has no sideboard editor; the section is present for future support.
+    Intentionally excludes ownership/shopping fields. Include the sideboard
+    section when requested; the deck total always counts main cards only.
     """
     if not isinstance(snapshot, dict):
         raise ValueError("A deck snapshot is required.")
@@ -686,9 +825,8 @@ def official_deck_list_text(snapshot):
         for card, quantity in by_section[section]:
             lines.append(f"{quantity} {card_name(card)}")
 
-    # Twin Suns does not currently expose a sideboard editor. Keep the
-    # requested section in the export; any future sideboard data is supported
-    # when it is present in the snapshot.
+    if not include_sideboard:
+        return "\n".join(lines) + "\n"
     raw_sideboard = snapshot.get("sideboard") or []
     sideboard = []
     for entry in raw_sideboard:
@@ -882,6 +1020,11 @@ def render_deck_builder(st):
                         border-color: #9f2530 !important;
                         color: #ffffff !important;
                     }
+                    .st-key-swu_compact_deck_list [class*="st-key-swu_move_sb_"] button {
+                        width: 2.1rem !important;
+                        min-width: 2.1rem !important;
+                        font-size: 0.67rem !important;
+                    }
                     .st-key-swu_compact_deck_list [class*="st-key-swu_deck_remove_"] button {
                         width: 1.85rem !important;
                         min-width: 1.85rem !important;
@@ -927,9 +1070,9 @@ def render_deck_builder(st):
                             bulk_notice = session.pop("swu_bulk_added_notice", None)
                             if bulk_notice:
                                 st.caption(bulk_notice)
-                        # Qty | Name | Aspects | Cost | Added | Remove
-                        widths = [0.42, 3.65, 0.88, 0.47, 0.47, 0.60]
-                        headings = ("Qty", "Card name", "Aspects", "Cost", "Added", "Remove")
+                        # Qty | Name | Aspects | Cost | Added | To sideboard | Remove
+                        widths = [0.42, 3.02, 0.78, 0.42, 0.47, 0.67, 0.60]
+                        headings = ("Qty", "Card name", "Aspects", "Cost", "Added", "To SB", "Remove")
                         header_cols = st.columns(
                             widths, gap="xxsmall", vertical_alignment="center", wrap=False
                         )
@@ -955,7 +1098,7 @@ def render_deck_builder(st):
                                     missing_aspect_icons(card, supply)
                                     if leaders and base else 0
                                 )
-                                qty_col, name_col, aspect_col, cost_col, added_col, remove_col = (
+                                qty_col, name_col, aspect_col, cost_col, added_col, side_col, remove_col = (
                                     st.columns(
                                         widths, gap="xxsmall",
                                         vertical_alignment="center", wrap=False,
@@ -1002,6 +1145,13 @@ def render_deck_builder(st):
                                             "Not added to physical deck — click to mark added"
                                         ),
                                     )
+                                with side_col:
+                                    if st.button(
+                                        "→ SB", key=f"swu_move_sb_{gid}",
+                                        help="Move one copy from main deck to sideboard",
+                                    ):
+                                        move_to_sideboard(session, gid)
+                                        st.rerun()
                                 with remove_col:
                                     if st.button(
                                         "−1", key=f"swu_deck_remove_{gid}",
@@ -1010,6 +1160,57 @@ def render_deck_builder(st):
                                         remove_card(session, gid)
                                         # Ensure the draw-deck total at the top refreshes.
                                         st.rerun()
+
+            side_rows = sideboard_entries(session)
+            st.markdown(f"**Sideboard** · {sum(int(e['count']) for e in side_rows.values())} cards")
+            if side_rows:
+                st.caption("Move copies back to the main deck or remove them entirely.")
+                with st.container(key="swu_compact_sideboard_list"):
+                    st.markdown("""
+                    <style>
+                    .st-key-swu_compact_sideboard_list [data-testid="stHorizontalBlock"] { gap:0.24rem !important; min-height:1.45rem !important; }
+                    .st-key-swu_compact_sideboard_list [data-testid="stVerticalBlock"] { gap:0.03rem !important; }
+                    .st-key-swu_compact_sideboard_list [data-testid="stMarkdownContainer"] p { margin:0 !important; line-height:1.07rem !important; }
+                    .st-key-swu_compact_sideboard_list button { min-height:1.38rem !important; height:1.38rem !important; padding:0 0.2rem !important; font-size:0.69rem !important; }
+                    .st-key-swu_compact_sideboard_list [class*="st-key-swu_sb_added_yes_"] button { background:#15803d !important; color:white !important; }
+                    .st-key-swu_compact_sideboard_list [class*="st-key-swu_sb_added_no_"] button { background:#ba303b !important; color:white !important; }
+                    </style>""", unsafe_allow_html=True)
+                    sb_widths = [0.38, 3.1, 0.6, 0.8, 0.65]
+                    for col, heading in zip(st.columns(sb_widths, gap="xxsmall"),
+                                            ("Qty", "Card", "Added", "To Deck", "Remove")):
+                        with col:
+                            st.caption(heading)
+                    for gid, entry in sorted(side_rows.items(), key=lambda item: (
+                        _cost_sort_key(item[1]["card"]),
+                        display_card_name(item[1]["card"]).casefold(),
+                    )):
+                        quantity = int(entry["count"])
+                        rec = _zone_progress(session, "sideboard", gid, quantity)
+                        cols = st.columns(sb_widths, gap="xxsmall", vertical_alignment="center")
+                        with cols[0]:
+                            st.markdown(f"**{quantity}×**")
+                        with cols[1]:
+                            st.markdown(escape(display_card_name(entry["card"])))
+                        with cols[2]:
+                            st.button(
+                                "✓" if rec["inDeck"] >= quantity else "✕",
+                                key=f"swu_sb_added_{'yes' if rec['inDeck'] >= quantity else 'no'}_{gid}",
+                                on_click=set_zone_added,
+                                args=(session, "sideboard", gid, quantity),
+                                help="Toggle physical Added status for this sideboard card",
+                            )
+                        with cols[3]:
+                            if st.button("← Deck", key=f"swu_sb_to_main_{gid}",
+                                         help="Move one copy back to main deck"):
+                                move_to_main_deck(session, gid)
+                                st.rerun()
+                        with cols[4]:
+                            if st.button("−1", key=f"swu_sb_remove_{gid}",
+                                         help="Remove one sideboard copy"):
+                                remove_sideboard_card(session, gid)
+                                st.rerun()
+            else:
+                st.caption("No cards in sideboard.")
 
         with deck_right:
             # Reserved for the dynamic card/details panel planned next.

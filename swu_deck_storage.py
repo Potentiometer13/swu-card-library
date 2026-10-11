@@ -17,7 +17,8 @@ from swu_twin_suns import (
     card_copy_limit, card_identity, get_selected_leaders, leaders_can_pair,
     tcgplayer_missing_text,
     all_needed_candidates, fetch_bulk_printing_info, bulk_needed_text,
-    official_deck_list_text,
+    official_deck_list_text, export_requirements, SIDEBOARD_KEY,
+    SIDEBOARD_PROGRESS_KEY,
 )
 
 SAVE_TABLE = "swu_saved_decks"
@@ -105,16 +106,44 @@ def normalize_snapshot(data):
         if limit is not None and qty > limit:
             raise ValueError(f"Copy limit exceeded for {card.get('name')}.")
         entries[gid] = {"card": card, "count": qty}
+    sideboard_raw = data.get("sideboard", [])
+    if not isinstance(sideboard_raw, list) or len(sideboard_raw) > MAX_ENTRIES:
+        raise ValueError("Sideboard must be a list of at most 500 entries.")
+    sideboard = {}
+    for row in sideboard_raw:
+        if not isinstance(row, dict):
+            raise ValueError("A sideboard entry is not an object.")
+        card = _safe_card(row.get("card"))
+        qty = row.get("count")
+        if type(qty) is not int or not (1 <= qty <= MAX_QUANTITY):
+            raise ValueError("Sideboard quantities must be positive whole numbers.")
+        gid = card_identity(card)
+        if gid in sideboard:
+            raise ValueError("Sideboard contains a duplicate gameplay card.")
+        sideboard[gid] = {"card": card, "count": qty}
+    for gid in set(entries) | set(sideboard):
+        main_qty = int(entries.get(gid, {}).get("count", 0))
+        side_qty = int(sideboard.get(gid, {}).get("count", 0))
+        card = entries.get(gid, sideboard.get(gid))["card"]
+        limit = card_copy_limit(card)
+        if limit is not None and main_qty + side_qty > limit:
+            raise ValueError(f"Copy limit exceeded across main and sideboard: {card.get('name')}.")
     author = str(data.get("author") or "").strip()
     if len(author) > 120:
         raise ValueError("Author name must be at most 120 characters.")
     card_rows = [entries[gid] for gid in sorted(entries)]
     required = required_cards(leaders, base, card_rows)
     progress = normalize_progress_map(data.get("card_progress", {}), required)
+    side_rows = [sideboard[gid] for gid in sorted(sideboard)]
+    side_required = required_cards([], None, side_rows)
+    side_progress = normalize_progress_map(
+        data.get("sideboard_progress", {}), side_required
+    )
     return {
         "version": SCHEMA_VERSION, "format": FORMAT, "name": name, "author": author,
         "leaders": leaders, "base": base,
         "cards": card_rows, "card_progress": progress,
+        "sideboard": side_rows, "sideboard_progress": side_progress,
     }
 
 
@@ -126,6 +155,8 @@ def snapshot_from_session(session, name):
         "base": session.get("swu_selected_base"),
         "cards": list((session.get("swu_twin_suns_cards") or {}).values()),
         "card_progress": session.get(PROGRESS_SESSION_KEY) or {},
+        "sideboard": list((session.get(SIDEBOARD_KEY) or {}).values()),
+        "sideboard_progress": session.get(SIDEBOARD_PROGRESS_KEY) or {},
     }
     return normalize_snapshot(raw)
 
@@ -147,6 +178,10 @@ def restore_snapshot(session, snapshot):
     session["swu_deck_name"] = data["name"]
     session["swu_deck_author"] = data.get("author", "")
     session[PROGRESS_SESSION_KEY] = data.get("card_progress", {})
+    session[SIDEBOARD_KEY] = {
+        card_identity(entry["card"]): entry for entry in data["sideboard"]
+    }
+    session[SIDEBOARD_PROGRESS_KEY] = data.get("sideboard_progress", {})
     # Remove old progress widget values so importing another deck displays
     # its values, instead of retaining the prior deck's toggles.
     for key in list(session):
@@ -177,6 +212,8 @@ def start_new_deck(session):
         "base": None,
         "cards": [],
         "card_progress": {},
+        "sideboard": [],
+        "sideboard_progress": {},
     }
     restore_snapshot(session, empty_snapshot)
     session["swu_deck_progress_filter"] = "All cards"
@@ -262,11 +299,20 @@ def added_cards_for_collection(session):
         list((session.get("swu_twin_suns_cards") or {}).values()),
     )
     progress = normalize_progress_map(session.get(PROGRESS_SESSION_KEY) or {}, selections)
-    return {
+    changes = {
         gid: record["inDeck"]
         for gid, (_, quantity) in selections.items()
         if (record := progress.get(gid, {"inDeck": 0}))["inDeck"] > 0
     }
+    side_required = required_cards(
+        [], None, list((session.get(SIDEBOARD_KEY) or {}).values())
+    )
+    side_progress = normalize_progress_map(
+        session.get(SIDEBOARD_PROGRESS_KEY) or {}, side_required
+    )
+    for gid, record in side_progress.items():
+        changes[gid] = changes.get(gid, 0) + record["inDeck"]
+    return {gid: qty for gid, qty in changes.items() if qty > 0}
 
 
 def render_deck_storage(st, make_client):
@@ -371,25 +417,14 @@ def render_deck_storage(st, make_client):
         # so selection is preserved across Streamlit reruns and deployments.
         stem = _deck_filename(deck_name).removesuffix(".json")
 
-        # Both buylist modes include leaders, base, and main-deck quantities.
-        # All ignores ownership; Needed Only respects physical deck progress.
-        selections, progress = {}, {}
-        try:
-            selections = required_cards(
-                get_selected_leaders(state),
-                state.get("swu_selected_base"),
-                list((state.get("swu_twin_suns_cards") or {}).values()),
-            )
-            progress = normalize_progress_map(
-                state.get(PROGRESS_SESSION_KEY) or {}, selections
-            )
-        except ValueError as exc:
-            st.warning(f"Buylist export unavailable: {exc}")
+        # Scope is applied independently by the Buylist and Set exports.
+        # Both zones use the existing physical/ownership progress accounting.
+
 
         # Widths favor the two option groups, particularly Rare/Legendary.
         # No use_container_width=True: buttons are only as wide as their labels.
         json_col, official_col, buy_col, set_col = st.columns(
-            [1.25, 1.8, 3.25, 4.4], gap="small", vertical_alignment="top",
+            [1.15, 2.5, 4.4, 6.3], gap="small", vertical_alignment="top",
             width=1460,
         )
         with json_col:
@@ -413,54 +448,72 @@ def render_deck_storage(st, make_client):
 
         with official_col:
             st.markdown("**Official Deck List**")
+            off_btn, off_option = st.columns([1.55, 1], gap="xxsmall", vertical_alignment="center")
+            with off_option:
+                official_include_sideboard = st.checkbox(
+                    "Sideboard", value=True,
+                    key="swu_official_include_sideboard",
+                    help="Include the sideboard section in the official deck list.",
+                )
             if snapshot is not None:
                 try:
-                    official_text = official_deck_list_text(snapshot)
+                    official_text = official_deck_list_text(
+                        snapshot, include_sideboard=official_include_sideboard
+                    )
                 except (ValueError, TypeError, KeyError) as exc:
                     st.warning(f"Official deck-list export unavailable: {exc}")
                     official_text = ""
             else:
                 official_text = ""
-            st.download_button(
-                "Export Official Deck List",
-                data=official_text.encode("utf-8"),
-                file_name=stem + "_official_deck_list.txt",
-                mime="text/plain",
-                key="swu_export_official_deck_list",
-                use_container_width=False,
-                disabled=not official_text,
-                help=(
-                    "Plain-text deck roster: two leaders, base, main-deck total, "
-                    "cards sorted by type and cost, and sideboard total."
-                ),
-            )
+            with off_btn:
+                st.download_button(
+                    "Export List",
+                    data=official_text.encode("utf-8"),
+                    file_name=stem + "_official_deck_list.txt",
+                    mime="text/plain",
+                    key="swu_export_official_deck_list",
+                    use_container_width=False,
+                    disabled=not official_text,
+                    help="Official deck roster with optional sideboard section.",
+                )
 
         with buy_col:
             st.markdown("**Export Buylist**")
-            buy_choices, buy_action = st.columns(
-                [3, 1], gap="small", vertical_alignment="center"
+            buy_choices, buy_include, buy_action = st.columns(
+                [3.1, 1.7, 0.8], gap="xxsmall", vertical_alignment="center"
             )
             with buy_choices:
                 buy_mode = st.radio(
                     "Buylist content",
-                    ["All", "Needed Only"],
+                    ["All", "Needed", "Sideboard"],
                     index=1,
                     horizontal=True,
                     label_visibility="collapsed",
-                    key="swu_buylist_export_mode",
-                    help=(
-                        "All includes every required copy, even ones you own. "
-                        "Needed Only excludes copies already accounted for in the deck."
-                    ),
+                    key="swu_buylist_export_mode_v2",
+                    help="All: every main and optionally sideboard copy. Needed: only missing copies. Sideboard: every sideboard copy.",
                 )
+            with buy_include:
+                buy_sideboard = st.checkbox(
+                    "Sideboard", value=True, key="swu_buylist_include_sideboard",
+                    disabled=(buy_mode == "Sideboard"),
+                    help="Include sideboard cards along with the main deck.",
+                )
+            scope = ("sideboard" if buy_mode == "Sideboard" else
+                     "both" if buy_sideboard else "main")
+            buy_text = ""
             try:
+                selections, progress = export_requirements(state, scope=scope)
                 buy_text = tcgplayer_missing_text(
-                    selections, progress, include_owned=(buy_mode == "All")
+                    selections, progress,
+                    include_owned=(buy_mode in {"All", "Sideboard"}),
                 )
             except ValueError as exc:
                 st.warning(f"Buylist export unavailable: {exc}")
-                buy_text = ""
-            buy_suffix = "_buylist_all.txt" if buy_mode == "All" else "_buylist_needed.txt"
+            buy_suffix = {
+                "All": "_buylist_all.txt",
+                "Needed": "_buylist_needed.txt",
+                "Sideboard": "_buylist_sideboard.txt",
+            }[buy_mode]
             with buy_action:
                 st.download_button(
                     "Export",
@@ -475,8 +528,8 @@ def render_deck_storage(st, make_client):
 
         with set_col:
             st.markdown("**Export Needed by Set**")
-            set_choices, set_action = st.columns(
-                [4.3, 1], gap="small", vertical_alignment="center"
+            set_choices, set_scope_col, set_action = st.columns(
+                [3.0, 3.4, 0.7], gap="xxsmall", vertical_alignment="center"
             )
             with set_choices:
                 set_mode = st.radio(
@@ -490,6 +543,18 @@ def render_deck_storage(st, make_client):
                         "Rare/Legendary cards. Rare/Legendary includes only those rarities."
                     ),
                 )
+            with set_scope_col:
+                set_scope = st.radio(
+                    "Sideboard scope",
+                    ["Both", "Main", "Sideboard"],
+                    horizontal=True, label_visibility="collapsed",
+                    key="swu_set_export_scope",
+                    help="Choose which deck zone to include in the missing-by-set list.",
+                )
+            scope = {
+                "Both": "both", "Main": "main",
+                "Sideboard": "sideboard",
+            }[set_scope]
             category = {
                 "All": "all", "Bulk Only": "bulk", "Rare/Legendary": "nonbulk"
             }[set_mode]
@@ -498,8 +563,10 @@ def render_deck_storage(st, make_client):
                 "bulk": "_needed_bulk_by_set.txt",
                 "nonbulk": "_needed_rare_legendary_by_set.txt",
             }[category]
+            suffix = suffix.replace(".txt", f"_{scope}.txt")
             set_text = ""
             try:
+                selections, progress = export_requirements(state, scope=scope)
                 candidates = all_needed_candidates(selections, progress)
                 if candidates:
                     # Cache only printings/rarities; compute the selected list
@@ -542,15 +609,15 @@ def render_deck_storage(st, make_client):
                 )
         st.caption(
             "Set exports list missing quantities by expansion, with niche-set "
-            "codes and ((reprint references)). Rare/Legendary is based on "
-            "all known printings of each card."
+            "codes and ((reprint references)). Scope options select main, "
+            "sideboard or both. Rare/Legendary uses all known printings."
         )
     with modify_collection_tab:
         st.write("**Modify your account's collection using this deck**")
         st.caption(
-            "Only copies marked **Added** (physically in this deck) are transferred. "
-            "That includes leaders and your base if marked In deck. "
-            "Unmarked deck-list cards are ignored."
+            "Only copies marked **Added** (physically in main deck or sideboard) are transferred. "
+            "That includes leaders, your base, and marked sideboard cards. "
+            "Unmarked cards are ignored."
         )
         transfer = st.radio(
             "Collection action",

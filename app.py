@@ -32,7 +32,7 @@ from swu_inventory import owned_quantities, adjust_owned
 from swu_my_collection import render_my_collection
 from swu_twin_suns import (
     render_deck_builder, add_card, card_copy_limit, card_identity,
-    deck_entries, get_selected_leaders, aspect_supply,
+    deck_entries, sideboard_entries, add_sideboard_card, get_selected_leaders, aspect_supply,
 )
 from swu_leaders import (
     leader_page_controls,
@@ -736,8 +736,15 @@ def show_card(card):
 
 
 def add_twin_suns_card(card):
-    """Add the selected gameplay card to session-only Twin Suns draw deck."""
+    """Add a gameplay card to the Twin Suns main deck."""
     success, message = add_card(st.session_state, card)
+    if not success:
+        st.toast(message)
+
+
+def add_twin_suns_sideboard_card(card):
+    """Add a gameplay card to the Twin Suns sideboard."""
+    success, message = add_sideboard_card(st.session_state, card)
     if not success:
         st.toast(message)
 
@@ -1880,19 +1887,30 @@ with card_tab:
                                 group_id, {}
                             ).get("count", 0)
                             limit = card_copy_limit(deck_card)
-                            can_add = limit is None or deck_count < limit
-                            # Stay inside the existing card width. Nest only
-                            # once under the four-column gallery (Streamlit safe).
-                            action_deck, decrement, increment = st.columns(
-                                [4, 0.5, 0.5], gap="xxsmall", vertical_alignment="center"
+                            side_count = sideboard_entries(st.session_state).get(
+                                group_id, {}
+                            ).get("count", 0)
+                            can_add = limit is None or deck_count + side_count < limit
+                            # All four actions remain inside the original card width.
+                            action_deck, action_side, decrement, increment = st.columns(
+                                [2.25, 1.5, 0.5, 0.5], gap="xxsmall", vertical_alignment="center"
                             )
                             with action_deck:
                                 st.button(
-                                    "Add to Deck" if can_add else "✓ In Deck",
+                                    "Add Deck" if can_add else "At Limit",
                                     key=f"swu_twin_suns_add_{group_id}",
                                     on_click=add_twin_suns_card, args=(deck_card,),
                                     use_container_width=True,
                                     disabled=not can_add,
+                                    help="Add a card to the main draw deck",
+                                )
+                            with action_side:
+                                st.button(
+                                    "+ Side", key=f"swu_twin_suns_side_{group_id}",
+                                    on_click=add_twin_suns_sideboard_card,
+                                    args=(deck_card,), use_container_width=True,
+                                    disabled=not can_add,
+                                    help=f"Add to sideboard ({side_count} there now)",
                                 )
                             logged_in = bool(st.session_state.get("swu_auth_user_id"))
                             with decrement:
@@ -1950,17 +1968,8 @@ with deck_tab:
 with my_decks_tab:
     render_all_decks(st, create_client)
 
-
 with collection_tab:
-    render_my_collection(
-        st,
-        create_client,
-        get_database(),
-        get_filter_options,
-        get_stat_maxima,
-        is_niche_set,
-    )
-
+    render_my_collection(st, create_client, get_database(), get_filter_options, get_stat_maxima, is_niche_set)
 
 with all_decks_tab:
     st.header("All Decks")
