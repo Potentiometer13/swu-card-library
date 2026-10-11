@@ -1004,12 +1004,21 @@ def _saved_decks(st, make_client):
     client = _client_from_session(st, make_client)
     if client is None:
         raise RuntimeError("You must sign in to view saved decks.")
-    rows = (client.table(SAVE_TABLE)
-            .select("id,name,updated_at,deck_data")
-            .eq("user_id", user_id)
-            .order("updated_at", desc=True)
-            .limit(200)
-            .execute().data or [])
+    rows = []
+    page_size = 200
+    offset = 0
+    while True:
+        batch = (client.table(SAVE_TABLE)
+                 .select("id,name,updated_at,deck_data")
+                 .eq("user_id", user_id)
+                 .order("updated_at", desc=True)
+                 .order("id")
+                 .range(offset, offset + page_size - 1)
+                 .execute().data or [])
+        rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += len(batch)
     state["swu_decks_cache"] = {
         "user_id": user_id, "time": time.monotonic(), "rows": rows,
     }

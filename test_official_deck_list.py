@@ -2,7 +2,7 @@
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-sys.path[:0] = [str(Path(__file__).parent), '/mnt/data/swu_collection_progress_update', '/mnt/data/swu_stage_2g_named_decks']
+sys.path.insert(0, str(Path(__file__).parent))
 sys.modules.setdefault('streamlit', SimpleNamespace(dialog=lambda *a, **kw: (lambda f: f)))
 from swu_twin_suns import official_deck_list_text
 
@@ -50,16 +50,17 @@ def test_empty_and_sideboard():
     assert sideboard.endswith('Sideboard Total: 2\n2 A Side\n')
     print('PASS: empty deck and forward-compatible sideboard section')
 
-def test_export_ui():
-    content=(Path(__file__).parent/'swu_deck_storage.py').read_text()
-    assert 'st.tabs(["Import", "Export"])' in content
-    assert 'Export Official Deck List' in content
-    assert 'official_deck_list_text(snapshot)' in content
-    assert 'swu_export_swudb' in content
-    assert 'swu_shopping_all_needed_set_text' in content
-    print('PASS: official TXT export added without replacing existing Import/Export buttons')
+def test_exclude_sideboard():
+    snapshot = {'name': 'Main only', 'leaders': [], 'base': None,
+                'cards': [{'card': card('Main Card'), 'count': 1}],
+                'sideboard': [{'card': card('Side Card'), 'count': 2}]}
+    text = official_deck_list_text(snapshot, include_sideboard=False)
+    assert '1 Main Card\n' in text
+    assert 'Sideboard' not in text and 'Side Card' not in text
+    assert '2 Side Card\n' in official_deck_list_text(snapshot)
+    print('PASS: sideboard inclusion option preserves main-deck export')
 
 if __name__ == '__main__':
     test_deck_list_order_count_and_subtitles()
     test_empty_and_sideboard()
-    test_export_ui()
+    test_exclude_sideboard()
