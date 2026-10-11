@@ -1883,6 +1883,9 @@ with card_tab:
                                 if k in ("uuid", "set_code", "collector_number",
                                          "variant_type", "front_image_url")
                             }}
+                            deck_card["price_selection"] = (
+                                "manual" if st.session_state.get(f"swu_printing_manual_{group_id}") else "auto"
+                            )
                             deck_count = deck_entries(st.session_state).get(
                                 group_id, {}
                             ).get("count", 0)
@@ -1963,7 +1966,7 @@ with card_tab:
 with deck_tab:
     render_deck_storage(st, create_client)
     st.divider()
-    render_deck_builder(st)
+    render_deck_builder(st, get_database())
 
 with my_decks_tab:
     render_all_decks(st, create_client)

@@ -124,6 +124,8 @@ def add_sideboard_card(session, card):
         return False, "Copy limit reached across main deck and sideboard. Move an existing copy instead."
     entries = sideboard_entries(session)
     count = int(entries.get(gid, {}).get("count", 0))
+    if entries.get(gid, {}).get("card", {}).get("price_selection") == "manual" and card.get("price_selection") != "manual":
+        card = entries[gid]["card"]
     entries[gid] = {"card": dict(card), "count": count + 1}
     return True, "Added to sideboard."
 
@@ -289,6 +291,8 @@ def add_card(session, card):
     limit = card_copy_limit(card)
     if limit is not None and _total_zone_copies(session, gid) >= limit:
         return False, "Copy limit reached for this card."
+    if entries.get(gid, {}).get("card", {}).get("price_selection") == "manual" and card.get("price_selection") != "manual":
+        card = entries[gid]["card"]
     entries[gid] = {"card": dict(card), "count": count + 1}
     # A copy-limit exception can change a checkbox into a numeric input.
     # Keep any existing widget state aligned with the new quantity.
@@ -1018,6 +1022,15 @@ def _render_deck_right_panel(st, session, entries, filter_choice="All cards"):
             if _matches_progress_filter(session, gid, entry, filter_choice, "sideboard")
         }
         cards = _gallery_cards(main_visible, side_visible)
+        printing_options = session.get("swu_deck_printing_options")
+        if printing_options and cards:
+            from swu_grouping import show_grouped_card
+            columns = st.columns(4, gap="small")
+            for index, card in enumerate(cards):
+                with columns[index % 4]:
+                    show_grouped_card(card, printing_options.get(card_identity(card), [card]),
+                                      key_prefix="swu_deck_art", show_printing_id=False)
+            return
         images = [(_safe_card_image_url(card), display_card_name(card)) for card in cards]
         images = [(url, name) for url, name in images if url]
         if not images:
@@ -1190,8 +1203,11 @@ def official_deck_list_text(snapshot, include_sideboard=True):
     return "\n".join(lines) + "\n"
 
 
-def render_deck_builder(st):
+def render_deck_builder(st, db=None):
     session = st.session_state
+    if db is not None:
+        from swu_price_ui import prepare_deck_prices
+        prepare_deck_prices(session, db)
     leaders = get_selected_leaders(session)
     base = session.get("swu_selected_base")
     entries = deck_entries(session)
@@ -1470,9 +1486,9 @@ def render_deck_builder(st):
                             bulk_notice = session.pop("swu_bulk_added_notice", None)
                             if bulk_notice:
                                 st.caption(bulk_notice)
-                        # Qty | Name | Aspects | Cost | Added | To sideboard | Remove
-                        widths = [0.42, 3.02, 0.78, 0.42, 0.47, 0.67, 0.60]
-                        headings = ("Qty", "Card name", "Aspects", "Cost", "Added", "To SB", "Remove")
+                        # Qty | Name | Aspects | Cost | Added | To sideboard | Remove | Price
+                        widths = [0.42, 2.60, 0.78, 0.42, 0.47, 0.67, 0.60, 0.55]
+                        headings = ("Qty", "Card name", "Aspects", "Cost", "Added", "To SB", "Remove", "Price")
                         header_cols = st.columns(
                             widths, gap="xxsmall", vertical_alignment="center", wrap=False
                         )
@@ -1498,7 +1514,7 @@ def render_deck_builder(st):
                                     missing_aspect_icons(card, supply)
                                     if leaders and base else 0
                                 )
-                                qty_col, name_col, aspect_col, cost_col, added_col, side_col, remove_col = (
+                                qty_col, name_col, aspect_col, cost_col, added_col, side_col, remove_col, price_col = (
                                     st.columns(
                                         widths, gap="xxsmall",
                                         vertical_alignment="center", wrap=False,
@@ -1526,6 +1542,9 @@ def render_deck_builder(st):
                                     st.markdown(
                                         str(cost) if cost is not None and str(cost) != "" else "—"
                                     )
+                                with price_col:
+                                    from swu_prices import price_text
+                                    st.markdown(price_text(card))
                                 with added_col:
                                     st.button(
                                         "✓" if in_deck else "✕",
@@ -1583,9 +1602,9 @@ def render_deck_builder(st):
                     .st-key-swu_compact_sideboard_list [class*="st-key-swu_sb_added_yes_"] button { background:#15803d !important; color:white !important; }
                     .st-key-swu_compact_sideboard_list [class*="st-key-swu_sb_added_no_"] button { background:#ba303b !important; color:white !important; }
                     </style>""", unsafe_allow_html=True)
-                    sb_widths = [0.38, 3.1, 0.6, 0.8, 0.65]
+                    sb_widths = [0.38, 2.55, 0.6, 0.8, 0.65, 0.55]
                     for col, heading in zip(st.columns(sb_widths, gap="xxsmall"),
-                                            ("Qty", "Card", "Added", "To Deck", "Remove")):
+                                            ("Qty", "Card", "Added", "To Deck", "Remove", "Price")):
                         with col:
                             st.caption(heading)
                     for gid, entry in sorted(side_rows.items(), key=lambda item: (
@@ -1599,6 +1618,9 @@ def render_deck_builder(st):
                             st.markdown(f"**{quantity}×**")
                         with cols[1]:
                             st.markdown(_hoverable_card_name(entry["card"]), unsafe_allow_html=True)
+                        with cols[5]:
+                            from swu_prices import price_text
+                            st.markdown(price_text(entry["card"]))
                         with cols[2]:
                             st.button(
                                 "✓" if rec["inDeck"] >= quantity else "✕",

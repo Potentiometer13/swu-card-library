@@ -28,6 +28,7 @@ ideas, rebuild, reorganize, or change export formatting without a specific reque
 - swu_swudb_json.py: SWUDB-compatible import/export.
 - swu_collection_progress.py: per-deck physical progress.
 - swu_inventory.py, swu_my_collection.py: account-wide inventory and collection UI.
+- swu_prices.py, swu_price_ui.py: cached TCGCSV prices and explicit printing selection.
 - import_cards.py: scheduled database updates; running it writes data.
 
 Preserve gallery filters, alternate-printing selection, aspect compatibility, niche
@@ -68,3 +69,12 @@ consistent. Avoid horizontal row scrolling, excessive spacing, unnecessary rerun
 and unrelated style changes. Preserve cursor-position card previews and the shared
 Show Cards selector. All Decks is reserved for future sharing; do not change privacy
 or add sharing until requested.
+
+## Pricing
+
+Use TCGCSV USD market prices per copy, not an invented listing average. Preserve
+explicit printing choices and physical progress when updating price defaults.
+Never guess prices for unmatched printings or treat missing quotes as zero. Keep
+price requests server-side and cached; follow TCGCSV's daily refresh, timestamp,
+custom User-Agent, and request-spacing guidelines. No production schema change is
+required for the local price cache.
