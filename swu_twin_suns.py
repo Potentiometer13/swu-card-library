@@ -1583,9 +1583,9 @@ def render_deck_builder(st):
                     .st-key-swu_compact_sideboard_list [class*="st-key-swu_sb_added_yes_"] button { background:#15803d !important; color:white !important; }
                     .st-key-swu_compact_sideboard_list [class*="st-key-swu_sb_added_no_"] button { background:#ba303b !important; color:white !important; }
                     </style>""", unsafe_allow_html=True)
-                    sb_widths = [0.38, 2.68, 0.42, 0.6, 0.8, 0.65]
+                    sb_widths = [0.38, 3.1, 0.6, 0.8, 0.65]
                     for col, heading in zip(st.columns(sb_widths, gap="xxsmall"),
-                                            ("Qty", "Card", "Cost", "Added", "To Deck", "Remove")):
+                                            ("Qty", "Card", "Added", "To Deck", "Remove")):
                         with col:
                             st.caption(heading)
                     for gid, entry in sorted(side_rows.items(), key=lambda item: (
@@ -1600,11 +1600,6 @@ def render_deck_builder(st):
                         with cols[1]:
                             st.markdown(_hoverable_card_name(entry["card"]), unsafe_allow_html=True)
                         with cols[2]:
-                            cost = entry["card"].get("cost")
-                            st.markdown(
-                                str(cost) if cost is not None and str(cost) != "" else "—"
-                            )
-                        with cols[3]:
                             st.button(
                                 "✓" if rec["inDeck"] >= quantity else "✕",
                                 key=f"swu_sb_added_{'yes' if rec['inDeck'] >= quantity else 'no'}_{gid}",
@@ -1612,12 +1607,12 @@ def render_deck_builder(st):
                                 args=(session, "sideboard", gid, quantity),
                                 help="Toggle physical Added status for this sideboard card",
                             )
-                        with cols[4]:
+                        with cols[3]:
                             if st.button("← Deck", key=f"swu_sb_to_main_{gid}",
                                          help="Move one copy back to main deck"):
                                 move_to_main_deck(session, gid)
                                 st.rerun()
-                        with cols[5]:
+                        with cols[4]:
                             if st.button("−1", key=f"swu_sb_remove_{gid}",
                                          help="Remove one sideboard copy"):
                                 remove_sideboard_card(session, gid)
